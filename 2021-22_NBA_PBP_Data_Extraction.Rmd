@@ -1,0 +1,570 @@
+---
+title: "Predicting NBA Player Career Outcome"
+author: "Mohamed Hassan-El Serafi"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(nbastatR)   # devtools::install_github("abresler/nbastatR")
+library(future)
+
+team_logs <- game_logs(seasons = 2022, result_types = "team")
+
+games <- team_logs %>%
+  mutate(slugTeamHome = ifelse(locationGame == "H", slugTeam, slugOpponent),
+         slugTeamAway = ifelse(locationGame == "A", slugTeam, slugOpponent)) %>%
+  distinct(idGame, slugTeamHome, slugTeamAway)
+```
+
+
+```{r}
+games
+```
+
+
+
+
+```{r}
+play_logs_all <- play_by_play_v2(game_ids = unique(games$idGame))
+```
+
+
+
+```{r}
+play_logs_all
+```
+
+
+
+```{r}
+colnames(play_logs_all)
+```
+
+
+```{r}
+play_logs_all %>%
+  select(idGame, numberEvent, numberPeriod, timeQuarter, descriptionPlayHome, descriptionPlayVisitor) %>%
+  add_count(idGame, numberEvent, numberPeriod, timeQuarter, descriptionPlayHome, descriptionPlayVisitor) %>%
+  filter(n > 1) %>%
+  head(10)
+```
+
+```{r}
+play_logs_all %>%
+  select(idGame, numberEvent, numberPeriod, timeQuarter, descriptionPlayHome, descriptionPlayVisitor) %>%
+  filter(idGame == 21900924,
+         numberEvent > 75, 
+         numberEvent < 90)
+```
+
+```{r}
+new_pbp <- play_logs_all %>%
+  mutate(numberOriginal = numberEvent) %>%
+  distinct(idGame, numberEvent, .keep_all = TRUE) %>%   # remove duplicate events
+  mutate(secsLeftQuarter = (minuteRemainingQuarter * 60) + secondsRemainingQuarter) %>%             
+  mutate(secsStartQuarter = case_when(                                                                    
+    numberPeriod %in% c(1:5) ~ (numberPeriod - 1) * 720,
+    TRUE ~ 2880 + (numberPeriod - 5) * 300
+  )) %>%
+  mutate(secsPassedQuarter = ifelse(numberPeriod %in% c(1:4), 720 - secsLeftQuarter, 300 - secsLeftQuarter),  
+         secsPassedGame = secsPassedQuarter + secsStartQuarter) %>%
+  arrange(idGame, secsPassedGame) %>%
+  filter(numberEventMessageType != 18) %>%     # instant replay
+  group_by(idGame) %>%
+  mutate(numberEvent = row_number()) %>%  # new numberEvent column with events in the right order
+  ungroup() %>%
+  select(idGame, numberOriginal, numberEventMessageType, numberEventActionType, namePlayer1, namePlayer2, namePlayer3,                   
+         slugTeamPlayer1, slugTeamPlayer2,  slugTeamPlayer3, numberPeriod, timeQuarter, secsPassedGame, 
+         descriptionPlayHome, numberEvent, descriptionPlayVisitor) %>%
+  mutate(shotPtsHome = case_when(
+    numberEventMessageType == 3 & !str_detect(descriptionPlayHome, "MISS") ~ 1,                            
+    numberEventMessageType == 1 & str_detect(descriptionPlayHome, "3PT") ~ 3,                              
+    numberEventMessageType == 1 & !str_detect(descriptionPlayHome, "3PT") ~ 2,
+    TRUE ~ 0
+  )) %>%
+  mutate(shotPtsAway = case_when(
+    numberEventMessageType == 3 & !str_detect(descriptionPlayVisitor, "MISS") ~ 1,
+    numberEventMessageType == 1 & str_detect(descriptionPlayVisitor, "3PT") ~ 3,
+    numberEventMessageType == 1 & !str_detect(descriptionPlayVisitor, "3PT") ~ 2,
+    TRUE ~ 0
+  )) %>%
+  group_by(idGame) %>%
+  mutate(ptsHome = cumsum(shotPtsHome),
+         ptsAway = cumsum(shotPtsAway)) %>%
+  ungroup() %>%
+  left_join(games) %>%
+  select(idGame, numberOriginal, numberEventMessageType, numberEventActionType, slugTeamHome, slugTeamAway, slugTeamPlayer1,
+         slugTeamPlayer2, slugTeamPlayer3, numberPeriod, timeQuarter, secsPassedGame, numberEvent, namePlayer1, namePlayer2, 
+         namePlayer3, descriptionPlayHome, descriptionPlayVisitor, ptsHome, ptsAway, shotPtsHome, shotPtsAway) %>%
+  mutate(marginBeforeHome = ptsHome - ptsAway - shotPtsHome + shotPtsAway,
+         marginBeforeAway = ptsAway - ptsHome - shotPtsAway + shotPtsHome,
+         timeQuarter = str_pad(timeQuarter, width = 5, pad = 0))
+```
+
+
+
+```{r}
+subs_made <- new_pbp %>%
+  filter(numberEventMessageType == 8) %>%        # Note 6
+  mutate(slugTeamLocation = ifelse(slugTeamPlayer1 == slugTeamHome, "Home", "Away")) %>%
+  select(idGame, numberPeriod, timeQuarter, secsPassedGame, slugTeamPlayer = slugTeamPlayer1,
+         slugTeamLocation, playerOut = namePlayer1, playerIn = namePlayer2) %>%
+  pivot_longer(cols = starts_with("player"),
+               names_to = "inOut",
+               names_prefix = "player",
+               values_to = "namePlayer") %>%
+  group_by(idGame, numberPeriod, slugTeamPlayer, namePlayer) %>%
+  filter(row_number() == 1) %>%
+  ungroup()
+```
+
+```{r}
+others_qtr <- new_pbp %>%
+  filter(numberEventMessageType != 8) %>%                             
+  filter(!(numberEventMessageType == 6 & numberEventActionType %in% c(10, 11, 16, 18, 25))) %>%     # Note 7
+  filter(!(numberEventMessageType == 11 & numberEventActionType %in% c(1, 4))) %>%   # Note 8
+  pivot_longer(cols = starts_with("namePlayer"),
+               names_to = "playerNumber",
+               names_prefix = "namePlayer",
+               values_to = "namePlayer") %>%
+  mutate(slugTeamPlayer = case_when(playerNumber == 1 ~ slugTeamPlayer1,
+                                    playerNumber == 2 ~ slugTeamPlayer2,
+                                    playerNumber == 3 ~ slugTeamPlayer3,
+                                    TRUE ~ "None")) %>%
+  mutate(slugTeamLocation = ifelse(slugTeamPlayer == slugTeamHome, "Home", "Away")) %>%
+  filter(!is.na(namePlayer),
+         !is.na(slugTeamPlayer)) %>%
+  anti_join(subs_made %>%
+              select(idGame, numberPeriod, slugTeamPlayer, namePlayer)) %>%    # remove players that were subbed in the quarter
+  distinct(idGame, numberPeriod, namePlayer, slugTeamPlayer, slugTeamLocation)
+```
+
+```{r}
+lineups_quarters <- subs_made %>%
+  filter(inOut == "Out") %>%
+  select(idGame, numberPeriod, slugTeamPlayer, namePlayer, slugTeamLocation) %>%
+  bind_rows(others_qtr) %>%
+  arrange(idGame, numberPeriod, slugTeamPlayer)
+
+lineups_quarters
+```
+
+```{r}
+lineups_quarters %>%
+  count(idGame, numberPeriod, slugTeamPlayer) %>%
+  filter(n != 5)
+```
+
+```{r}
+lineups_quarters %>%
+  filter(idGame == 21900023,
+         numberPeriod == 5,
+         slugTeamPlayer == "DEN")
+```
+
+
+```{r}
+missing_players_ot <- tribble(
+  ~idGame,   ~slugTeamPlayer,          ~namePlayer,     ~numberPeriod,
+  21900023,        "DEN",           "Malik Beasley",          5,
+  21900120,        "MIN",          "Treveon Graham",          5,
+  21900272,        "ATL",         "De'Andre Hunter",          5,
+  21900409,        "WAS",               "Ish Smith",          5,
+  21900502,        "GSW",              "Damion Lee",          5,
+  21900550,        "OKC",       "Terrance Ferguson",          5,
+  21900563,        "DET",              "Tony Snell",          5,
+  21900696,        "SAC",         "Harrison Barnes",          5,
+  21900787,        "ATL",         "De'Andre Hunter",          5,
+  21900892,        "HOU",             "Eric Gordon",          5,
+  21901281,        "DEN",            "Monte Morris",          6
+) %>%
+  left_join(games) %>%
+  mutate(slugTeamLocation = ifelse(slugTeamHome == slugTeamPlayer, "Home", "Away")) %>%
+  select(-c(slugTeamHome, slugTeamAway))
+```
+
+
+
+
+
+```{r}
+lineups_quarters <- lineups_quarters %>%
+  bind_rows(missing_players_ot) %>%
+  arrange(idGame, numberPeriod, slugTeamPlayer)
+```
+
+
+
+
+
+```{r}
+lineup_subs <- new_pbp %>%
+  filter(numberEventMessageType == 8) %>%
+  select(idGame, numberPeriod, timeQuarter, secsPassedGame, slugTeamPlayer = slugTeamPlayer1, playerOut = namePlayer1, 
+         playerIn = namePlayer2, numberEvent) %>%
+  arrange(idGame, numberEvent) %>%
+  group_by(idGame, numberPeriod, slugTeamPlayer) %>%
+  mutate(row1 = row_number()) %>%
+  ungroup() %>%
+  left_join(lineups_quarters %>%
+              group_by(idGame, numberPeriod, slugTeamPlayer) %>%
+              summarise(lineupBefore = paste(sort(unique(namePlayer)), collapse = ", ")) %>%
+              ungroup() %>%
+              mutate(row1 = 1)) %>%
+  select(-row1)
+
+lineup_subs
+```
+
+
+
+```{r}
+lineup_subs <- lineup_subs %>%
+  mutate(lineupBefore = str_split(lineupBefore, ", ")) %>% 
+  arrange(idGame, numberEvent) %>%
+  group_by(idGame, numberPeriod, slugTeamPlayer) %>%
+  mutate(lineupAfter = accumulate2(playerIn, playerOut, ~setdiff(c(..1, ..2), ..3), .init = lineupBefore[[1]])[-1],
+         lineupBefore = coalesce(lineupBefore, lag(lineupAfter))) %>%
+  ungroup() %>% 
+  mutate_all(~map_chr(., ~paste(.x, collapse = ", "))) %>%
+  mutate_at(vars("numberEvent", "numberPeriod", "idGame"), ~ as.integer(.)) %>%
+  mutate(secsPassedGame = as.numeric(secsPassedGame)) %>%
+  arrange(idGame, numberEvent) %>%
+  left_join(lineups_quarters %>%
+              distinct(idGame, slugTeamPlayer, slugTeamLocation)) %>%
+  filter(!is.na(slugTeamLocation))
+
+lineup_subs %>%
+  select(lineupBefore, playerOut, playerIn, lineupAfter) %>%
+  head(20)
+```
+
+```{r}
+lineup_subs %>%
+  select(lineupBefore, playerOut, playerIn, lineupAfter) %>%
+  head(20)
+```
+
+
+```{r}
+lineup_game <- new_pbp %>%
+  group_by(idGame, numberPeriod) %>%
+  mutate(row1 = row_number()) %>%
+  ungroup() %>%
+  left_join(lineups_quarters %>%
+              group_by(idGame, numberPeriod, slugTeamLocation) %>%
+              summarise(lineupBefore = paste(sort(unique(namePlayer)), collapse = ", ")) %>%
+              ungroup() %>%
+              pivot_wider(names_from = slugTeamLocation,
+                          names_prefix = "lineupInitial",
+                          values_from = lineupBefore) %>%
+              mutate(row1 = 1)) %>%
+  select(-row1) %>%
+  left_join(lineup_subs %>%
+              mutate(lineupBeforeHome = ifelse(slugTeamLocation == "Home", lineupBefore, NA),
+                     lineupAfterHome = ifelse(slugTeamLocation == "Home", lineupAfter, NA),
+                     lineupBeforeAway = ifelse(slugTeamLocation == "Away", lineupBefore, NA),
+                     lineupAfterAway = ifelse(slugTeamLocation == "Away", lineupAfter, NA)) %>%
+              select(idGame, numberPeriod, timeQuarter, secsPassedGame, numberEvent, slugTeamPlayer1 = slugTeamPlayer,
+                     contains("Home"), contains("Away"))) %>%
+  mutate_at(vars(c(lineupBeforeHome, lineupAfterHome)), ~ ifelse(!is.na(lineupInitialHome), lineupInitialHome, .)) %>%
+  mutate_at(vars(c(lineupBeforeAway, lineupAfterAway)), ~ ifelse(!is.na(lineupInitialAway), lineupInitialAway, .)) %>%
+  select(-starts_with("lineupInitial"))
+```
+
+
+```{r}
+lineup_game <- lineup_game %>%
+  group_by(idGame, numberPeriod) %>%
+  mutate(lineupHome = na.locf(lineupAfterHome, na.rm = FALSE),
+         lineupAway = na.locf(lineupAfterAway, na.rm = FALSE),
+         lineupHome = ifelse(is.na(lineupHome), na.locf(lineupBeforeHome, fromLast = TRUE, na.rm = FALSE), lineupHome),
+         lineupAway = ifelse(is.na(lineupAway), na.locf(lineupBeforeAway, fromLast = TRUE, na.rm = FALSE), lineupAway),
+         lineupHome = str_split(lineupHome, ", "),
+         lineupAway = str_split(lineupAway, ", "),
+         lineupHome = map_chr(lineupHome, ~ paste(sort(.), collapse = ", ")),
+         lineupAway = map_chr(lineupAway, ~ paste(sort(.), collapse = ", "))) %>%
+  ungroup() %>%
+  select(-c(starts_with("lineupBefore"), starts_with("lineupAfter")))
+
+lineup_game
+```
+
+```{r}
+lineup_game
+```
+
+
+
+```{r}
+write.csv(lineup_game, "2021-22_pbp_data.csv")
+```
+
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(nbastatR)
+library(future)
+
+lineup_game <- read_csv("2021-22_pbp_data.csv",
+                        col_types = cols(timeQuarter = "c"))
+```
+
+
+
+
+```{r}
+lineup_game
+```
+
+
+```{r}
+lineup_game %>%
+  filter(idGame == 22100001,
+         numberPeriod == 1,
+         timeQuarter == "10:03") %>%
+  select(starts_with("descriptionPlay"), starts_with("pts"))
+```
+
+
+```{r}
+lineup_game %>%
+  filter(idGame == 22100001,
+         numberPeriod == 1,
+         timeQuarter == "10:03") %>%
+  group_by(idGame, secsPassedGame) %>%
+  mutate(ptsHome = ptsHome[row_number() == max(row_number())],
+         ptsAway = ptsAway[row_number() == max(row_number())]) %>%
+  ungroup() %>%
+  select(starts_with("descriptionPlay"), starts_with("pts"))
+```
+
+
+```{r}
+lineup_game %>%
+  filter(idGame == 21900078,
+         numberPeriod == 4,
+         timeQuarter == "00:06") %>%
+  select(starts_with("descriptionPlay"), starts_with("pts"))
+```
+
+
+
+```{r}
+lineup_game %>%
+  filter(idGame == 21900078,
+         numberPeriod == 4,
+         timeQuarter == "00:06") %>%
+  mutate(canSub = case_when(numberEventMessageType == 5 & numberEventActionType %in% c(1, 2) ~ 1,     # dead ball turnovers
+                            numberEventMessageType == 6 & numberEventActionType != 16 ~ 1,            # fouls
+                            numberEventMessageType == 7 & numberEventActionType == 5 ~ 1,             # kickballs
+                            numberEventMessageType == 4 & numberEventActionType == 0 & !str_detect(str_to_upper(descriptionPlayHome), "OFF:") ~ 1,
+                            numberEventMessageType == 4 & numberEventActionType == 0 & !str_detect(str_to_upper(descriptionPlayVisitor), "OFF:") ~ 1,
+                            TRUE ~ 0)) %>%
+  group_by(idGame, secsPassedGame) %>%
+  mutate(subOpp = cumsum(canSub)) %>%
+  group_by(idGame, secsPassedGame, subOpp) %>%
+  mutate(ptsHome = ptsHome[row_number() == max(row_number())],
+         ptsAway = ptsAway[row_number() == max(row_number())]) %>%
+  ungroup() %>%
+  select(starts_with("descriptionPlay"), starts_with("pts"), subOpp)
+```
+
+
+
+```{r}
+lineup_game_stats <- lineup_game %>%
+  mutate(canSub = case_when(numberEventMessageType == 5 & !numberEventActionType %in% c(1, 2) ~ 1,    # dead ball turnovers
+                            numberEventMessageType == 6 & numberEventActionType != 16 ~ 1,            # fouls
+                            numberEventMessageType == 11 & numberEventActionType != 4 ~ 1,
+                            numberEventMessageType == 7 & numberEventActionType == 5 ~ 1,             # kickballs
+                            numberEventMessageType == 4 & numberEventActionType == 0 & !str_detect(str_to_upper(descriptionPlayHome), "OFF:") ~ 1,
+                            numberEventMessageType == 4 & numberEventActionType == 0 & !str_detect(str_to_upper(descriptionPlayVisitor), "OFF:") ~ 1,
+                            TRUE ~ 0)) %>%
+  mutate(secsPassedGame2 = ifelse(timeQuarter == "12:00" &
+                                    (str_detect(str_to_lower(descriptionPlayHome), "technical") |
+                                       str_detect(str_to_lower(descriptionPlayVisitor), "technical")),
+                                  secsPassedGame + 0.005, secsPassedGame)) %>%    # Note 4
+  mutate(secsPassedGame2 = ifelse(timeQuarter == "00:00" & numberEventMessageType == 3 & numberEventActionType != 10,
+                                  secsPassedGame2 - 0.1,
+                                  secsPassedGame2)) %>%
+  group_by(idGame, numberPeriod, secsPassedGame) %>%
+  mutate(numberNew = ifelse(numberEventMessageType == 3 & numberEventActionType == 12, 
+                            paste(numberEvent[numberEventMessageType == 3 & numberEventActionType == 11], collapse = ", "), 
+                            as.character(numberEvent)),
+         numberNew = ifelse(numberEventMessageType == 3 & numberEventActionType %in% c(14, 15), 
+                            paste(numberEvent[numberEventMessageType == 3 & numberEventActionType == 13], collapse = ", "),
+                            numberNew)) %>%
+  mutate(techs_and1 = sum(numberEventMessageType == 3 & numberEventActionType == 16) > 0 &
+           sum(numberEventMessageType == 3 & numberEventActionType == 10) > 0 & 
+           sum(numberEventMessageType == 8) > 0) %>%
+  mutate(numberNew = ifelse(numberEventMessageType == 3 & numberEventActionType == 10 & techs_and1, 
+                            paste(numberEvent[numberEventMessageType == 6 & numberEventActionType == 2 & techs_and1], collapse = ", "), 
+                            as.character(numberNew))) %>%
+  mutate(numberNew = str_split(numberNew, ", "),
+         numberNew = map(numberNew, ~as.numeric(.)),
+         numberNew = map2_dbl(numberNew, numberEvent, ~ max(.x[.x <= .y]))) %>%
+  ungroup() %>%
+  arrange(idGame, numberNew, numberEvent) %>%
+  group_by(idGame) %>%
+  mutate(newptsHome = cumsum(shotPtsHome),
+         newptsAway = cumsum(shotPtsAway)) %>%
+  group_by(idGame, numberPeriod, secsPassedGame2) %>%
+  mutate(subOpp = cumsum(canSub)) %>%
+  group_by(idGame = as.character(idGame), 
+           numberPeriod = as.character(numberPeriod), 
+           subOpp, 
+           secsPassedGame2 = as.character(secsPassedGame2)) %>%
+  mutate(hasFouls = sum(numberEventMessageType == 3)) %>%
+  mutate(newptsHome = ifelse(hasFouls > 0,
+                             newptsHome[row_number() == max(row_number()[numberEventMessageType == 3])],
+                             newptsHome),
+         newptsAway = ifelse(hasFouls > 0,
+                             newptsAway[row_number() == max(row_number()[numberEventMessageType == 3])],
+                             newptsAway)) %>%
+  ungroup() %>%
+  select(-c(secsPassedGame2, numberNew, techs_and1)) %>%
+  mutate_all(~ as.character(.)) %>%
+  mutate(secsPassedGame = as.numeric(secsPassedGame),
+         numberEvent = as.numeric(numberEvent))
+```
+
+
+```{r}
+lineup_game_stats
+```
+
+
+```{r}
+lineup_stats2 <- lineup_game_stats %>%
+  select(idGame, numberEvent, slugTeamHome, slugTeamAway, numberPeriod, timeQuarter, secsPassedGame, 
+         newptsHome, newptsAway, lineupHome, lineupAway) %>%
+  pivot_longer(cols = starts_with("lineup"),
+               names_to = "lineupLocation",
+               names_prefix = "lineup",
+               values_to = "lineup") %>%
+  mutate(ptsTeam = ifelse(lineupLocation == "Home", newptsHome, newptsAway),
+         ptsOpp = ifelse(lineupLocation == "Away", newptsHome, newptsAway),
+         slugTeam = ifelse(lineupLocation == "Home", slugTeamHome, slugTeamAway),
+         slugOpp = ifelse(lineupLocation == "Away", slugTeamHome, slugTeamAway)) %>%
+  distinct(idGame, slugTeam, slugOpp, numberPeriod, timeQuarter, secsPassedGame, ptsTeam, ptsOpp, lineup, 
+           teamLocation = lineupLocation, numberEvent) %>%
+  arrange(idGame, numberEvent)
+
+lineup_stats2 
+```
+
+
+```{r}
+lineup_stats2 <- lineup_stats2 %>%
+  group_by(idGame, slugTeam) %>%
+  mutate(lineupChange = lineup != lag(lineup),
+         lineupChange = coalesce(lineupChange, FALSE)) %>%
+  group_by(idGame, slugTeam) %>%
+  mutate(lineupStint = cumsum(lineupChange)) %>%
+  ungroup() %>%
+  arrange(idGame, lineupStint, numberEvent) %>%
+  group_by(idGame, slugTeam, lineup, lineupStint) %>%
+  summarise(initialScoreTeam = ptsTeam[row_number() == min(row_number())],
+            initialScoreOpp = ptsOpp[row_number() == min(row_number())],
+            finalScoreTeam = ptsTeam[row_number() == max(row_number())],
+            finalScoreOpp =  ptsOpp[row_number() == max(row_number())],
+            initialTime = secsPassedGame[row_number() == min(row_number())],
+            finalTime = secsPassedGame[row_number() == max(row_number())]) %>%
+  ungroup() %>%
+  arrange(idGame, lineupStint) %>%
+  group_by(idGame, slugTeam) %>%                              
+  mutate(finalTime = ifelse(row_number() == max(row_number()), finalTime, lead(initialTime))) %>%  
+  ungroup()
+
+lineup_stats2
+```
+
+```{r}
+lineup_stats2 <- lineup_stats2 %>%
+mutate(across(c(contains("Score")), ~ as.numeric(.), .names = "{col}")) %>%
+  mutate(totalScoreTeam = finalScoreTeam - initialScoreTeam,
+         totalScoreOpp = finalScoreOpp - initialScoreOpp,
+         netScoreTeam = totalScoreTeam - totalScoreOpp,
+         totalTime = finalTime - initialTime) %>%
+  arrange(idGame, lineupStint)
+```
+
+
+
+
+```{r}
+indiv_stats <- lineup_stats2 %>%
+  separate_rows(lineup, sep = ", ") %>%
+  group_by(namePlayer = lineup, idGame, slugTeam) %>%
+  summarise(totalPlusMinus = sum(netScoreTeam),
+            totalSecs = sum(totalTime)) %>%
+  ungroup() %>%
+  arrange(-totalPlusMinus)
+
+indiv_stats
+```
+
+
+```{r}
+indiv_stats %>%
+  group_by(namePlayer) %>%
+  summarise(seasonPM = sum(totalPlusMinus),
+            seasonSecs = sum(totalSecs)) %>%
+  ungroup() %>%
+  arrange(-seasonPM) %>%
+  mutate(seasonMin = paste0(floor(seasonSecs / 60), ":", str_pad(round(seasonSecs %% 60, 0), side = "left", width = 2, pad = 0))) %>%
+  select(-seasonSecs)
+```
+
+
+```{r}
+lineup_stats2 %>%
+  group_by(lineup) %>%
+  summarise(seasonPM = sum(netScoreTeam),
+            seasonSecs = sum(totalTime)) %>%
+  ungroup() %>%
+  arrange(-seasonPM) %>%
+  mutate(seasonMin = paste0(floor(seasonSecs / 60), ":", str_pad(round(seasonSecs %% 60, 0), side = "left", width = 2, pad = 0))) %>%
+  select(-seasonSecs)
+```
+
+

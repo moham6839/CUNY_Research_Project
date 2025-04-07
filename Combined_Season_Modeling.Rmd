@@ -1,0 +1,902 @@
+---
+title: "Combined Dataset"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(hoopR)
+library(glmnet)
+library(caret)
+library(broom)
+library(rstanarm)
+library(rsample)
+library(brms)
+```
+
+```{r}
+set.seed(1234)
+```
+
+
+
+
+
+
+
+
+
+
+
+# 2020-21 Season
+
+
+```{r}
+season_2021 <- read_csv("data/nba_2021_season_rapm_data.csv.gz")
+```
+
+
+
+```{r}
+player_2021 <- read_csv("data/nba_2021_player_table.csv")
+```
+
+
+## 2021-22 Season
+
+
+```{r}
+season_2122 <- read_csv("data/nba_2122_season_rapm_data.csv.gz")
+```
+
+
+```{r}
+player_2122 <- read_csv("data/nba_2122_player_table.csv")
+```
+
+
+
+## 2022-23 Season
+
+
+```{r}
+season_2223 <- read_csv("data/nba_2223_season_rapm_data.csv.gz")
+```
+
+
+
+```{r}
+player_2223 <- read_csv("data/nba_2223_player_table.csv")
+```
+
+
+
+
+```{r}
+season_2324 <- read_csv("data/nba_2324_season_rapm_data.csv.gz")
+```
+
+
+
+
+
+
+```{r}
+player_2324 <- read_csv("data/nba_2324_player_table.csv")
+```
+
+
+
+## Combining All Four Seasons
+
+
+```{r}
+combined_df <- bind_rows(season_2021, season_2122, season_2223, season_2324)
+```
+
+
+```{r}
+combined_df <- combined_df %>% 
+  replace(is.na(.), 0)
+```
+
+
+```{r}
+# pivot to long - total minutes per player
+player_minutes <- combined_df %>%
+  summarise(across(8:892, ~ sum(abs(.x) * minutes, na.rm = TRUE))) %>%
+  pivot_longer(cols = `201142`:`1631167`,
+               names_to = "player_id", 
+               values_to = "minutes") %>%
+  mutate(player_id = as.numeric(player_id))
+```
+
+```{r}
+player_minutes
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+player_combined_df <- bind_rows(player_2021, player_2122, player_2223, player_2324) %>%
+  distinct()
+player_combined_df
+```
+
+```{r}
+player_combined_df <- player_combined_df %>%
+  left_join(player_minutes, by = c("player_id")) %>%
+  arrange(desc(minutes))
+player_combined_df
+```
+
+
+```{r}
+ggplot(player_minutes, aes(x = minutes)) +
+  geom_histogram() + # Create histogram with specified binwidth
+  labs(title = "Distribution of Player Total Minutes Played",  # Add a title
+       x = "Player Minutes",  # Add x-axis label
+       y = "Frequency") +  # Add y-axis label
+  theme_minimal() + # Use a minimal theme
+  theme(panel.grid.major = element_blank(), # Remove gridlines
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) # Remove box
+        #axis.line = element_blank(),
+        #panel.background = element_rect(fill = "white", color = "white"))
+  
+```
+
+
+
+
+
+
+
+```{r}
+# Creating column for point differential
+nba_rapm_data_combined <- combined_df |>
+  mutate(score_diff = home_points - away_points) 
+```
+
+```{r}
+nba_rapm_data_combined <- nba_rapm_data_combined %>%
+  relocate(score_diff, .after=margin)
+```
+
+
+
+
+
+
+
+
+
+
+## Adjusted Plus/Minus
+
+
+```{r}
+# Without train-test split
+set.seed(1234)
+# Now for ease, create a dataset that only has the response and player columns:
+nba_margin_apm_model_data_combined <- nba_rapm_data_combined |>
+  dplyr::select(-c(game_id, stint_id, n_pos, home_points, away_points, minutes,
+                   score_diff))
+
+## do train-test split - check other model documentation for train-test split; in sample vs out of sample accuracy
+
+# Fit the model (notice we do not include an intercept term)
+rosenbaum_margin_model_combined <- lm(margin ~ 0 + ., data = nba_margin_apm_model_data_combined)
+
+# Get the coefficients and join player names:
+rosenbaum_margin_coef_combined <- tidy(rosenbaum_margin_model_combined) |>
+  # First convert the term column to numeric:
+  mutate(term = as.numeric(str_remove_all(term, "`"))) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+
+# View top 10:
+rosenbaum_margin_coef_combined |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate, minutes)
+```
+
+
+
+
+
+
+
+
+```{r}
+player_matrix_combined <- nba_margin_apm_model_data_combined |>
+  dplyr::select(-margin) |>
+  as.matrix()
+```
+
+
+
+## Ridge
+
+
+
+
+```{r}
+set.seed(1234)
+cv_ridge <- cv.glmnet(player_matrix_combined, nba_margin_apm_model_data_combined$margin, alpha = 0, intercept=TRUE, standardize=FALSE)
+```
+
+
+
+
+```{r}
+set.seed(1234)
+cv_ridge$lambda.min
+```
+
+
+
+
+```{r}
+set.seed(1234)
+# Load caret package
+#library(caret)
+
+# Create training control
+train_control <- trainControl(method = "cv", number = 10)
+
+# Fit Ridge Regression with caret
+ridge_caret <- train(
+  player_matrix_combined, nba_margin_apm_model_data_combined$margin,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 0, lambda = 60.39332)
+)
+
+# Extract RMSE
+ridge_caret$results$RMSE
+
+```
+
+
+**************************
+
+
+
+
+
+```{r}
+set.seed(1234)
+# View help for function with:
+# help(cv.glmnet)
+lambdas <- 10^seq(2, -3, by = -.1)
+# ridge with 10 fold cv, no intercept and no standardization
+fit_ridge_cv_combined <- cv.glmnet(x = player_matrix_combined,
+                          y = nba_margin_apm_model_data_combined$margin,
+                          alpha = 0, # alpha set to 0 is Ridge
+                          lambda = lambdas,
+                          #type.measure = "mse",
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+fit_ridge_cv_combined$lambda.min
+```
+
+
+
+
+
+```{r}
+# Extract RMSE for the optimal lambda
+rmse_cv <- sqrt(min(cv_ridge$cvm))  # RMSE from cross-validation
+print(paste("Cross-Validated RMSE:", round(rmse_cv, 4)))
+```
+
+
+
+```{r}
+str(cv_ridge)
+```
+
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_ridge_cv_combined)
+```
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_ridge_cv_combined$glmnet.fit, xvar = "lambda")
+```
+
+
+
+
+```{r}
+set.seed(1234)
+tidy_ridge_coef_combined <- tidy(cv_ridge$glmnet.fit)
+tidy_ridge_coef_combined
+```
+
+
+```{r}
+cv_ridge
+```
+```{r}
+cv_ridge$lambda.min
+```
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined <- tidy_ridge_coef_combined |>
+  filter(lambda == cv_ridge$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined |>
+  slice_max(estimate, n = 30) |>
+  dplyr::select(term, player_name, estimate, minutes)
+```
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate, minutes)
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Ridge estimate", y = "Count") +
+  theme_bw()
+```
+
+```{r}
+# Extract RMSE for the optimal lambda
+rmse_cv <- sqrt(min(fit_ridge_cv_combined$cvm))  # RMSE from cross-validation
+print(paste("Cross-Validated RMSE:", round(rmse_cv, 4)))
+```
+
+```{r}
+# Calculate R-squared
+R_squared <- 1 - fit_ridge_cv_combined$cvm / var(nba_margin_apm_model_data_combined$margin)
+print(paste("R-squared:", R_squared))
+```
+
+
+
+## Lasso 
+
+
+
+```{r}
+set.seed(1234)
+# With nlambda
+# View help for function with:
+# help(cv.glmnet)
+
+# ridge with 10 fold cv, no intercept and no standardization
+fit_lasso_cv_combined_lambda <- cv.glmnet(x = player_matrix_combined,
+                          y = nba_margin_apm_model_data_combined$margin,
+                          alpha = 1, # alpha set to 1 is Lasso
+                          nlambda = 3000,
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+
+
+```{r}
+fit_lasso_cv_combined_lambda
+```
+
+
+```{r}
+# Extract RMSE for the optimal lambda
+rmse_cv <- sqrt(min(fit_lasso_cv_combined_lambda$cvm))  # RMSE from cross-validation
+print(paste("Cross-Validated RMSE:", round(rmse_cv, 4)))
+```
+
+
+
+
+
+
+
+********************
+
+
+```{r}
+set.seed(1234)
+# View help for function with:
+# help(cv.glmnet)
+
+# ridge with 10 fold cv, no intercept and no standardization
+fit_lasso_cv_combined <- cv.glmnet(x = player_matrix_combined,
+                          y = nba_margin_apm_model_data_combined$margin,
+                          alpha = 1, # alpha set to 1 is Lasso
+                          nfolds = 30,
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+# RMSE from cross-validation
+print(paste("Cross-Validated RMSE:", min(cv_ridge$cvm)))
+```
+
+
+
+
+
+```{r}
+# Extract RMSE for the optimal lambda
+rmse_cv <- sqrt(min(fit_lasso_cv_combined$cvm))  # RMSE from cross-validation
+print(paste("Cross-Validated RMSE:", round(rmse_cv, 4)))
+```
+
+
+
+
+```{r}
+set.seed(1234)
+# View help for function with:
+# help(cv.glmnet)
+
+# ridge with 10 fold cv, no intercept and no standardization
+fit_lasso_cv_combined_modified <- cv.glmnet(x = player_matrix_combined,
+                          y = nba_margin_apm_model_data_combined$margin,
+                          alpha = 1, # alpha set to 1 is Lasso
+                          
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+
+
+
+```{r}
+fit_lasso_cv_combined$lambda.min
+```
+
+
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_lasso_cv_combined)
+```
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_lasso_cv_combined$glmnet.fit, xvar = "lambda")
+```
+
+```{r}
+set.seed(1234)
+tidy_lasso_coef_combined <- tidy(fit_lasso_cv_combined$glmnet.fit)
+tidy_lasso_coef_combined
+```
+
+
+```{r}
+set.seed(1234)
+rapm_lasso_coef_combined <- tidy_lasso_coef_combined |>
+  filter(lambda == fit_lasso_cv_combined$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+
+```{r}
+set.seed(1234)
+rapm_lasso_coef_combined |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_lasso_coef_combined |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_lasso_coef_combined |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Ridge estimate", y = "Count") +
+  theme_bw()
+```
+
+
+
+
+
+
+
+
+
+
+## Elastic Net
+
+```{r}
+cv_en <- cv.glmnet(player_matrix_combined, nba_margin_apm_model_data_combined$margin, alpha = 0.5)
+```
+
+
+
+```{r}
+# Load caret package
+#library(caret)
+
+# Create training control
+train_control <- trainControl(method = "cv", number = 10)
+
+# Fit Ridge Regression with caret
+ridge_caret <- train(
+  player_matrix_combined, nba_margin_apm_model_data_combined$margin,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = expand.grid(alpha = 0.5, lambda = cv_en$lambda.min)
+)
+
+# Extract RMSE
+ridge_caret$results$RMSE
+
+```
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+# View help for function with:
+# help(cv.glmnet)
+
+# use nfolds - approximate 
+# lasso with 10 fold cv, no intercept and no standardization
+fit_en_cv_combined <- cv.glmnet(x = player_matrix_combined,
+                          y = nba_margin_apm_model_data_combined$margin,
+                          alpha = 0.5,   # alpha set to 0.5 for elastic net
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+
+
+```{r}
+set.seed(1234)
+# Access the optimal lambda (lambda.min)
+    best_lambda <- fit_en_cv_combined$lambda.min
+    second_lambda <- fit_en_cv_combined$lambda.1se
+
+    # Or, the lambda within one standard error (lambda.1se)
+    # best_lambda <- cv_model$lambda.1se
+```
+
+```{r}
+best_lambda
+second_lambda
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+# 90/10 split - can control parameter of split
+plot(fit_en_cv_combined)
+```
+
+
+```{r}
+set.seed(1234)
+plot(fit_en_cv_combined$glmnet.fit, xvar = "lambda")
+```
+
+
+```{r}
+set.seed(1234)
+tidy_en_coef_combined <- tidy(fit_en_cv_combined$glmnet.fit)
+tidy_en_coef_combined
+```
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_en_coef_combined <- tidy_en_coef_combined |>
+  filter(lambda == fit_en_cv_combined$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+
+```{r}
+set.seed(1234)
+rapm_en_coef_combined |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+```{r}
+set.seed(1234)
+rapm_en_coef_combined |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+```{r}
+set.seed(1234)
+rapm_en_coef_combined |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM EN estimate", y = "Count") +
+  theme_bw()
+```
+
+
+```{r}
+# use code to test value of lambda - include minutes
+# pull out uncertainty in coefficients
+# bootstrapping with confidence intervals
+# work on regularization models and try bayesian model
+# pick lambda based on lowest out of sample error
+# players with highest or lowest coefficients
+# Bayesian - every player has prior distribution - mean of guassian set to zero
+# variance of normal distribution
+# try different values of lambda - try lambda = 0 and other values
+# check for ridge, EN, lasso with different lambda values - compare lambda with Sill
+# 
+# Bayesian with normal priors equivalent to ridge regression
+```
+
+
+
+
+
+
+
+
+## Bayesian
+
+
+```{r}
+model_bayes <- stan_glm(nba_margin_apm_model_data_combined$margin ~., data=player_matrix_combined, seed=111)
+```
+
+
+```{r}
+model_bayes <- stan_glm(margin ~., data=nba_margin_apm_model_data_combined, seed=111)
+```
+
+
+```{r}
+sqrt(mean(model_bayes$residuals^2))
+```
+
+
+
+```{r}
+summary(model_bayes)
+```
+
+```{r}
+tidy_bayes_coef_combined <- tidy(model_bayes$rstan_version)
+tidy_bayes_coef_combined
+```
+
+
+```{r}
+set.seed(1234)
+rapm_en_coef_combined <- tidy_bayes_coef_combined |>
+  filter(prior) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+```{r}
+data <- data.frame(y=nba_margin_apm_model_data_combined$margin, x=player_matrix_combined)
+```
+
+```{r}
+data
+```
+
+
+
+
+```{r}
+model_bayes_revised <- stan_glm(y ~., data=data, seed=111)
+```
+
+```{r}
+sqrt(mean(model_bayes_revised$residuals^2))
+```
+
+
+
+```{r}
+prior_summary(model_bayes_revised)
+```
+
+
+
+```{r}
+tidy_bayes_coef_combined <- tidy(model_bayes_revised$coefficients)
+tidy_bayes_coef_combined
+```
+
+
+```{r}
+set.seed(1234)
+rapm_en_coef_combined <- tidy_bayes_coef_combined |>
+  filter(coefficients == model_bayes_revised) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+```{r}
+summary(model_bayes_revised)
+```
+
+```{r}
+posterior_summary(model_bayes_revised)
+```
+
+
+```{r}
+#partition data frame into training and testing sets
+train_indices <- createDataPartition(nba_margin_apm_model_data_combined$margin, times=1, p=.75, list=FALSE)
+
+#create training set
+df_train <- nba_margin_apm_model_data_combined[train_indices , ]
+
+#create testing set
+df_test  <- nba_margin_apm_model_data_combined[-train_indices, ]
+
+#view number of rows in each set
+nrow(df_train)
+
+#[1] 800
+
+nrow(df_test)
+```
+
+
+```{r}
+# Prepare matrix inputs for glmnet
+X_train <- as.matrix(df_train[, -ncol(df_train)])  # Features
+y_train <- df_train$margin  # Target
+```
+
+```{r}
+# Prepare the test set matrix
+X_test <- as.matrix(df_test[, -ncol(df_test)])  # Test features
+y_test <- df_test$margin  # Actual target values
+```
+
+
+```{r}
+X_train
+```
+
+
+
+```{r}
+# Convert to data frame
+brms_df_train <- as.data.frame(y=X_train$margin, x=X_train)
+#brms_df_train$y_train <- y_train
+
+brms_df_test <- as.data.frame(y=X_test$margin, x=X_test)
+#brms_df_test$y_test <- y_test
+```
+
+
+
+```{r}
+brms_df_train <- brms_df_train %>%
+  rename_with(~ paste0("y", .), .cols = 1) %>%
+  rename_with(~ paste0("x", .), .cols = 2:885)
+```
+
+```{r}
+brms_df_train
+```
+
+
+
+```{r}
+brms_model <- brm(ymargin ~ ., data=brms_df_train)
+```
+
+
+
+

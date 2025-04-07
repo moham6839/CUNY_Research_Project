@@ -1,0 +1,52 @@
+---
+title: "2022-23 NBA PBP Data Extraction"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(nbastatR)   # devtools::install_github("abresler/nbastatR")
+library(future)
+
+team_logs <- game_logs(seasons = 2023, result_types = "team")
+
+games <- team_logs %>%
+  mutate(slugTeamHome = ifelse(locationGame == "H", slugTeam, slugOpponent),
+         slugTeamAway = ifelse(locationGame == "A", slugTeam, slugOpponent)) %>%
+  distinct(idGame, slugTeamHome, slugTeamAway)
+```
+
+```{r}
+games
+```
+
+```{r}
+play_logs_all <- play_by_play_v2(game_ids = unique(games$idGame))
+```
+
+
+```{r}
+play_logs_all
+```
+
+```{r}
+play_logs_all %>%
+  select(idGame, numberEvent, numberPeriod, timeQuarter, descriptionPlayHome, descriptionPlayVisitor) %>%
+  add_count(idGame, numberEvent, numberPeriod, timeQuarter, descriptionPlayHome, descriptionPlayVisitor) %>%
+  filter(n > 1) %>%
+  head(10)
+```
+
+
+
+
+
+

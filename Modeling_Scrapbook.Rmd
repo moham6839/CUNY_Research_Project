@@ -1,0 +1,839 @@
+---
+title: "Untitled"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+x = model.matrix(margin ~., nba_margin_apm_model_data_combined)[,-1] # trim off the first column
+                                         # leaving only the predictors
+y = nba_margin_apm_model_data_combined %>%
+  select(margin) %>%
+  unlist() %>%
+  as.numeric()
+```
+
+
+```{r}
+grid = 10^seq(10, -2, length = 100)
+ridge_mod = glmnet(x, y, alpha = 0, lambda = grid)
+```
+
+```{r}
+dim(coef(ridge_mod))
+plot(ridge_mod)    # Draw plot of coefficients
+```
+
+
+```{r}
+ridge_mod$lambda[50] #Display 50th lambda value
+```
+
+
+```{r}
+coef(ridge_mod)[,50] # Display coefficients associated with 50th lambda value
+```
+
+
+```{r}
+sqrt(sum(coef(ridge_mod)[-1,50]^2)) # Calculate l2 norm
+```
+
+
+```{r}
+ridge_mod$lambda[60] #Display 60th lambda value
+coef(ridge_mod)[,60] # Display coefficients associated with 60th lambda value
+sqrt(sum(coef(ridge_mod)[-1,60]^2)) # Calculate l2 norm
+```
+
+
+```{r}
+predict(ridge_mod, s=50, type = "coefficients")[1:20,]
+```
+
+
+
+
+```{r}
+set.seed(1)
+
+train = nba_margin_apm_model_data_combined %>%
+  sample_frac(0.5)
+
+test = nba_margin_apm_model_data_combined %>%
+  setdiff(train)
+
+x_train = model.matrix(margin~., train)[,-1]
+x_test = model.matrix(margin~., test)[,-1]
+
+y_train = train %>%
+  select(margin) %>%
+  unlist() %>%
+  as.numeric()
+
+y_test = test %>%
+  select(margin) %>%
+  unlist() %>%
+  as.numeric()
+```
+
+
+
+
+```{r}
+ridge_mod = glmnet(x_train, y_train, alpha=0, lambda = grid, thresh = 1e-12)
+ridge_pred = predict(ridge_mod, s = 4, newx = x_test)
+mean((ridge_pred - y_test)^2)
+```
+
+
+```{r}
+mean((mean(y_train) - y_test)^2)
+```
+
+
+
+
+```{r}
+ridge_pred = predict(ridge_mod, s = 1e10, newx = x_test)
+mean((ridge_pred - y_test)^2)
+```
+
+
+
+
+
+```{r}
+ridge_pred = predict(ridge_mod, s = 0, newx = x_test)
+mean((ridge_pred - y_test)^2)
+
+lm(margin~., data = train)
+predict(ridge_mod, s = 0, exact = T, type="coefficients")[1:20,]
+```
+
+
+```{r}
+set.seed(1)
+cv.out = cv.glmnet(x_train, y_train, alpha = 0) # Fit ridge regression model on training data
+bestlam = cv.out$lambda.min  # Select lamda that minimizes training MSE
+bestlam
+```
+
+
+
+```{r}
+plot(cv.out) # Draw plot of training MSE as a function of lambda
+```
+
+
+
+
+
+```{r}
+ridge_pred = predict(ridge_mod, s = bestlam, newx = x_test) # Use best lambda to predict test data
+mean((ridge_pred - y_test)^2) # Calculate test MSE
+```
+
+
+```{r}
+sqrt(mean((ridge_pred - y_test)^2)) # Calculate test MSE
+```
+
+
+
+
+
+```{r}
+out = glmnet(x, y, alpha = 0) # Fit ridge regression model on full dataset
+predict(out, type = "coefficients", s = bestlam)[1:20,] # Display coefficients using lambda chosen by CV
+```
+
+
+## Lasso
+
+```{r}
+lasso_mod = glmnet(x_train, 
+                   y_train, 
+                   alpha = 1, 
+                   lambda = grid) # Fit lasso model on training data
+
+plot(lasso_mod)    # Draw plot of coefficients
+```
+
+
+
+
+
+```{r}
+set.seed(1)
+cv.out = cv.glmnet(x_train, y_train, alpha = 1) # Fit lasso model on training data
+plot(cv.out) # Draw plot of training MSE as a function of lambda
+bestlam = cv.out$lambda.min # Select lamda that minimizes training MSE
+lasso_pred = predict(lasso_mod, s = bestlam, newx = x_test) # Use best lambda to predict test data
+mean((lasso_pred - y_test)^2) # Calculate test MSE
+```
+
+```{r}
+sqrt(mean((lasso_pred - y_test)^2))
+```
+
+
+
+
+
+
+```{r}
+out = glmnet(x, y, alpha = 1, lambda = grid) # Fit lasso model on full dataset
+lasso_coef = predict(out, type = "coefficients", s = bestlam)[1:20,] # Display coefficients using lambda chosen by CV
+lasso_coef
+```
+
+
+
+
+
+
+```{r}
+lasso_coef[lasso_coef != 0]
+```
+
+
+
+```{r}
+#define response variable
+y <- nba_margin_apm_model_data_combined$margin
+
+#define matrix of predictor variables
+x <- player_matrix_combined
+```
+
+
+```{r}
+#fit ridge regression model
+model <- glmnet(x, y, alpha = 0)
+
+#view summary of model
+summary(model)
+```
+
+
+```{r}
+#perform k-fold cross-validation to find optimal lambda value
+cv_model <- cv.glmnet(x, y, alpha = 0)
+
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.min
+best_lambda
+```
+
+
+```{r}
+plot(cv_model)
+```
+
+
+```{r}
+#find coefficients of best model
+best_model <- glmnet(x, y, alpha = 0, lambda = best_lambda)
+coef(best_model)
+```
+
+
+
+```{r}
+#produce Ridge trace plot
+plot(model, xvar = "lambda")
+```
+
+
+
+
+```{r}
+#use fitted best model to make predictions
+y_predicted <- predict(model, s = best_lambda, newx = x)
+
+#find SST and SSE
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_predicted - y)^2)
+
+#find R-Squared
+rsq <- 1 - sse/sst
+rsq
+```
+
+
+
+
+```{r}
+# Split the data (80% training, 20% testing)
+set.seed(123)  # For reproducibility
+index <- createDataPartition(nba_margin_apm_model_data_combined$margin, p = 0.75, list = FALSE)
+
+# Create training and testing sets
+train_set <- nba_margin_apm_model_data_combined[index, ]
+test_set <- nba_margin_apm_model_data_combined[-index, ]
+
+# Inspect the dimensions
+dim(train_set)  # 160 rows (80% of data)
+dim(test_set)   # 40 rows (20% of data)
+
+
+```
+
+
+```{r}
+# Prepare matrix inputs for glmnet
+X_train <- as.matrix(train_set[, -ncol(train_set)])  # Features
+y_train <- train_set$margin  # Target
+
+# Fit Ridge Regression model
+set.seed(123)
+ridge_model <- glmnet(X_train, y_train, alpha = 0)  # alpha = 0 for Ridge
+lasso_model <- glmnet(X_train, y_train, alpha = 1)  # alpha = 1 for Lasso
+en_model <- glmnet(X_train, y_train, alpha = 0.5)  # alpha = 0.5 for Elastic Net 
+```
+
+
+
+
+
+
+
+
+```{r}
+# Cross-validation to find the best lambda
+set.seed(123)
+cv_ridge <- cv.glmnet(X_train, y_train, alpha = 0)
+
+# Plot cross-validation results
+plot(cv_ridge)
+
+# Optimal lambda
+best_lambda <- cv_ridge$lambda.min
+cat("Best Lambda:", best_lambda)
+
+```
+
+
+
+```{r}
+# Cross-validation to find the best lambda
+set.seed(123)
+cv_lasso <- cv.glmnet(X_train, y_train, alpha = 1)
+
+# Plot cross-validation results
+plot(cv_lasso)
+
+# Optimal lambda
+best_lambda_lasso <- cv_lasso$lambda.min
+cat("Best Lambda:", best_lambda)
+
+```
+
+
+
+
+```{r}
+# Cross-validation to find the best lambda
+set.seed(123)
+cv_en <- cv.glmnet(X_train, y_train, alpha = 0.5)
+
+# Plot cross-validation results
+plot(cv_en)
+
+# Optimal lambda
+best_lambda_en <- cv_en$lambda.min
+cat("Best Lambda:", best_lambda)
+
+```
+
+
+
+
+
+
+
+```{r}
+# Prepare the test set matrix
+X_test <- as.matrix(test_set[, -ncol(test_set)])  # Test features
+y_test <- test_set$margin  # Actual target values
+
+# Make predictions using the optimal lambda
+ridge_predictions <- predict(cv_ridge, newx = X_test, s = "lambda.min")
+lasso_predictions <- predict(cv_lasso, newx = X_test, s = "lambda.min")
+en_predictions <- predict(cv_en, newx = X_test, s = "lambda.min")
+# Display predictions
+#head(predictions)
+
+```
+
+
+```{r}
+head(ridge_predictions)
+head(lasso_predictions)
+head(en_predictions)
+```
+
+
+```{r}
+# Calculate RMSE
+rmse_ridge <- sqrt(mean((ridge_predictions - y_test)^2))
+cat("Test Ridge RMSE:", rmse_ridge)
+
+# Calculate R²
+sse <- sum((ridge_predictions - y_test)^2)  # Sum of squared errors
+sst <- sum((y_test - mean(y_test))^2)  # Total sum of squares
+r2_ridge <- 1 - (sse / sst)
+cat(" Test Ridge R²:", r2_ridge)
+
+# Calculate RMSE
+rmse_lasso <- sqrt(mean((lasso_predictions - y_test)^2))
+cat(" Test Lasso RMSE:", rmse_lasso)
+
+# Calculate R²
+sse <- sum((lasso_predictions - y_test)^2)  # Sum of squared errors
+sst <- sum((y_test - mean(y_test))^2)  # Total sum of squares
+r2_lasso <- 1 - (sse / sst)
+cat(" Test Lasso R²:", r2_lasso)
+
+# Calculate RMSE
+rmse_en <- sqrt(mean((en_predictions - y_test)^2))
+cat(" Test Elastic Net RMSE:", rmse_en)
+
+# Calculate R²
+sse <- sum((en_predictions - y_test)^2)  # Sum of squared errors
+sst <- sum((y_test - mean(y_test))^2)  # Total sum of squares
+r2_en <- 1 - (sse / sst)
+cat(" Test Elastic Net R²:", r2_en)
+```
+
+
+
+
+
+
+
+*************************************************************
+
+
+
+
+### Train-test Split using createDataPartition
+
+```{r}
+# Create features and target matrixes
+X <- nba_margin_apm_model_data_combined %>% 
+  select(-margin)
+y <- nba_margin_apm_model_data_combined$margin
+
+# Scale data
+preprocessParams<-preProcess(X, method = c("center", "scale"))
+X <- predict(preprocessParams, X)
+```
+
+```{r}
+# Spliting training set into two parts based on outcome: 75% and 25%
+index <- createDataPartition(y, p=0.75, list=FALSE)
+X_train <- X[ index, ]
+X_test <- X[-index, ]
+y_train <- y[index]
+y_test<-y[-index]
+```
+
+
+```{r}
+# Create and fit Lasso and Ridge objects
+lasso<-train(y= y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = 1)
+           
+               ) 
+
+ridge<-train(y = y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 0, lambda = 1)
+           
+               ) 
+
+# Make the predictions
+predictions_lasso <- lasso %>% predict(X_test)
+predictions_ridge <- ridge %>% predict(X_test)
+
+# Print R squared scores
+data.frame(
+  Ridge_R2 = R2(predictions_ridge, y_test),
+  Lasso_R2 = R2(predictions_lasso, y_test)
+)
+```
+
+
+```{r}
+# Set lambda coefficients
+paramLasso <- seq(0, 1000, 10)
+paramRidge <- seq(0, 1000, 10)
+
+# Convert X_train to matrix for using it with glmnet function
+X_train_m <- as.matrix(X_train) 
+
+# Build Ridge and Lasso for 200 values of lambda 
+rridge <- glmnet(
+  x = X_train_m,
+  y = y_train,
+  alpha = 0, #Ridge
+  lambda = paramRidge
+  
+)
+
+llaso <- glmnet(
+  x = X_train_m,
+  y = y_train,
+  alpha = 1, #Lasso
+  lambda = paramLasso
+  
+)
+```
+
+
+
+
+```{r}
+parameters <- c(seq(0.1, 2, by =0.1) ,  seq(2, 5, 0.5) , seq(5, 25, 1))
+
+lasso<-train(y = y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = parameters) ,
+                 metric =  "Rsquared"
+               ) 
+
+ridge<-train(y = y_train,
+                 x = X_train,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 0, lambda = parameters),
+                 metric =  "Rsquared"
+           
+               ) 
+linear<-train(y = y_train, 
+              x = X_train, 
+              method = 'lm',
+              metric =  "Rsquared"
+              )
+
+print(paste0('Lasso best parameters: ' , lasso$finalModel$lambdaOpt))
+```
+
+
+
+
+
+
+
+```{r}
+#partition data frame into training and testing sets
+train_indices <- createDataPartition(nba_margin_apm_model_data_combined$margin, times=1, p=.75, list=FALSE)
+
+#create training set
+df_train <- nba_margin_apm_model_data_combined[train_indices , ]
+
+#create testing set
+df_test  <- nba_margin_apm_model_data_combined[-train_indices, ]
+
+#view number of rows in each set
+nrow(df_train)
+
+#[1] 800
+
+nrow(df_test)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+# Split the data (80% training, 20% testing)
+set.seed(123)  # For reproducibility
+index <- createDataPartition(nba_margin_apm_model_data_combined$margin, p = 0.75, list = FALSE)
+
+# Create training and testing sets
+train_set <- nba_margin_apm_model_data_combined[index, ]
+test_set <- nba_margin_apm_model_data_combined[-index, ]
+
+# Inspect the dimensions
+dim(train_set)  # 160 rows (80% of data)
+dim(test_set)   # 40 rows (20% of data)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Prepare matrix inputs for glmnet
+X_train <- as.matrix(train_set[, -ncol(train_set)])  # Features
+y_train <- train_set$margin  # Target
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Prepare the test set matrix
+X_test <- as.matrix(test_set[, -ncol(test_set)])  # Test features
+y_test <- test_set$margin  # Actual target values
+```
+
+
+
+### Ridge
+
+
+```{r}
+ridge_reg = glmnet(X_train, y_train, nlambda = 25, alpha = 0, family="gaussian", lambda = lambdas)
+
+summary(ridge_reg)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+lambdas <- 10^seq(2, -3, by = -.1)
+cv_ridge <- cv.glmnet(player_matrix_combined, nba_margin_apm_model_data_combined$margin, alpha = 0, lambda = lambdas,
+                      intercept=FALSE,
+                      standardize=FALSE)
+optimal_lambda <- cv_ridge$lambda.min
+optimal_lambda
+```
+
+
+```{r}
+set.seed(1234)
+# Compute R^2 from true and predicted values
+eval_results <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  R_square <- 1 - SSE / SST
+  RMSE = sqrt(SSE/nrow(df))
+
+  
+  # Model performance metrics
+data.frame(
+  RMSE = RMSE,
+  Rsquare = R_square
+)
+  
+}
+
+# Prediction and evaluation on train data
+predictions_train <- predict(ridge_reg, s = optimal_lambda, newx = X_train)
+eval_results(y_train, predictions_train, train_set)
+
+# Prediction and evaluation on test data
+predictions_test <- predict(ridge_reg, s = optimal_lambda, newx = X_test)
+eval_results(y_test, predictions_test, test_set)
+```
+
+
+
+```{r}
+set.seed(1234)
+tidy_ridge_coef <- tidy(cv_ridge$glmnet.fit)
+tidy_ridge_coef
+```
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef <- tidy_ridge_coef |>
+  filter(lambda == cv_ridge$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+```{r}
+rapm_ridge_coef
+```
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(term, player_name, estimate, minutes)
+```
+
+
+
+
+
+
+
+### Lasso
+
+
+```{r}
+lasso_reg = glmnet(X_train, y_train, nlambda = 25, alpha = 1, family = 'gaussian', lambda = lambdas)
+
+summary(lasso_reg)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+lambdas <- 10^seq(2, -3, by = -.1)
+cv_lasso <- cv.glmnet(player_matrix_combined, nba_margin_apm_model_data_combined$margin, alpha = 1, lambda = lambdas)
+optimal_lambda_lasso <- cv_lasso$lambda.min
+optimal_lambda_lasso
+```
+
+
+```{r}
+# Compute R^2 from true and predicted values
+eval_results <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  R_square <- 1 - SSE / SST
+  RMSE = sqrt(SSE/nrow(df))
+
+  
+  # Model performance metrics
+data.frame(
+  RMSE = RMSE,
+  Rsquare = R_square
+)
+  
+}
+
+# Prediction and evaluation on train data
+predictions_train <- predict(lasso_reg, s = optimal_lambda_lasso, newx = X_train)
+eval_results(y_train, predictions_train, train_set)
+
+# Prediction and evaluation on test data
+predictions_test <- predict(lasso_reg, s = optimal_lambda_lasso, newx = X_test)
+eval_results(y_test, predictions_test, test_set)
+```
+
+
+
+
+
+
+
+
+### Elastic
+
+```{r}
+en_reg = glmnet(X_train, y_train, nlambda = 25, alpha = 0.5, family = 'gaussian', lambda = lambdas)
+
+summary(en_reg)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+lambdas <- 10^seq(2, -3, by = -.1)
+cv_en <- cv.glmnet(player_matrix_combined, nba_margin_apm_model_data_combined$margin, alpha = 0.5, lambda = lambdas)
+optimal_lambda_en <- cv_en$lambda.min
+optimal_lambda_en
+```
+
+
+```{r}
+# Compute R^2 from true and predicted values
+eval_results <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  R_square <- 1 - SSE / SST
+  RMSE = sqrt(SSE/nrow(df))
+
+  
+  # Model performance metrics
+data.frame(
+  RMSE = RMSE,
+  Rsquare = R_square
+)
+  
+}
+
+# Prediction and evaluation on train data
+predictions_train <- predict(en_reg, s = optimal_lambda_en, newx = X_train)
+eval_results(y_train, predictions_train, train_set)
+
+# Prediction and evaluation on test data
+predictions_test <- predict(en_reg, s = optimal_lambda_en, newx = X_test)
+eval_results(y_test, predictions_test, test_set)
+```
+
+
+
+
+
+```{r}
+set.seed(1234)
+cv_ridge <- cv.glmnet(player_matrix_combined, nba_margin_apm_model_data_combined$margin, alpha = 0, intercept=TRUE, standardize=TRUE)
+```
+
+
+```{r}
+set.seed(1234)
+cv_ridge2 <- cv.glmnet(player_matrix_combined, nba_margin_apm_model_data_combined$margin, alpha = 0, intercept=FALSE, standardize=)
+```
+
+
+
+
+

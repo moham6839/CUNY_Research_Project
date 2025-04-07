@@ -1,0 +1,1168 @@
+---
+title: "Untitled"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+game_logs(seasons = 2024)
+```
+
+```{r}
+bref_players_stats(seasons = 2017:2018, tables = c("advanced", "totals"))
+```
+
+```{r}
+all_nba_players <- 
+	nba_player_ids(league = "NBA",
+											active_only = F)
+
+players_1998 <-
+	nba_season_players(
+		year.season_start = 1998,
+		include_only_rostered_players = F,
+		return_message = T
+	)
+brooklyn_nets_2016_roster <- 
+  get_nba_team_season_roster(team = "Brooklyn Nets", year_season_end = 2016)
+
+players_1998_2015 <- get_nba_seasons_players(years = 1998:2014,
+																						 only_on_roster = T,
+																						 message = F)
+
+profiles_2015_season <-
+	get_season_player_profiles(year.season_start = 2014, include_headline_stats = T,
+														 only_rostered_players = T,
+														 message = T)
+```
+
+
+
+```{r}
+library(RJDBC)
+
+drv <- JDBC("com.toshiba.mwcloud.gs.sql.Driver",
+            "/usr/share/java/gridstore-jdbc-5.0.0.jar")
+             #identifier.quote = "`")
+
+conn <- dbConnect(drv, "jdbc:gs://127.0.0.1:20001/myCluster/public", "admin", "admin")
+```
+
+
+```{r}
+# install.packages(“RJDBC”,dep=TRUE)
+# install.packages(“rJava”)
+# install.packages(“hoopR”)
+# install.packages(“nflreadr”)
+# install.packages(“devtools”, dep=TRUE)
+# devtools::install_github(“abresler/nbastatR”)
+# install.packages(‘stringr’)
+# install.packages(‘dplyr’)
+# install.packages(‘ggplot2’)
+# install.packages(‘lubridate’)
+# install.packages(‘ggalt’)
+```
+
+
+```{r}
+# Gather games from last season -------------------------------------------
+
+nba_game_log <- nba_leaguegamelog(season = 2022)
+nba_game_log <- nba_game_log$LeagueGameLog
+
+# Get the regular season game IDs:
+nba_season_games <- nba_game_log |>
+  pull(GAME_ID) |>
+  unique()
+
+# Generate the stint-level data -------------------------------------------
+
+# Create a function that will be wrapped inside possibly to iterate across
+# games, returning NULL if there is an error:
+
+get_game_stint_data <- function(game_i) {
+  
+  game_data <- nba_pbp(game_id = game_i)
+  
+  # Populate first row values with 0 scores:
+  game_data$home_score[1] <- 0
+  game_data$away_score[1] <- 0
+  game_data$score_margin[1] <- 0
+  
+  # Populate the missing values using fill()
+  game_data <- game_data |>
+    fill(home_score, away_score, score_margin) 
+  
+  # Get the home lineups:
+  home_lineups <- apply(dplyr::select(game_data, home_player1, home_player2,
+                                      home_player3, home_player4, home_player5),
+                        1,
+                        function(x) {
+                          paste(sort(x), collapse = ("_"))
+                        })
+  
+  # Repeat for away:
+  away_lineups <- apply(dplyr::select(game_data, away_player1, away_player2,
+                                      away_player3, away_player4, away_player5),
+                        1,
+                        function(x) {
+                          paste(sort(x), collapse = ("_"))
+                        })
+  
+  # Join these columns:
+  game_data$home_lineup <- home_lineups
+  game_data$away_lineup <- away_lineups
+  
+  # Now there are a couple of ways to figure out the stints, but I think the
+  # best way is to use the substitution events - where a stint changes once
+  # a substitution takes places (but only if the previous event was NOT a substitution)
+  
+  # Start by making an indicator for the stint change:
+  game_data <- game_data |>
+    mutate(is_sub = ifelse(event_type == 8, 1, 0),
+           new_stint_start = ifelse((is_sub == 1) & (lead(is_sub) != 1),
+                                    1, 0))
+  
+  # Hmm have to figure out the free throw issue - for substitutions that take place
+  # during a free throw window, then the new stint should start after the free throw
+  
+  # Easiest way to track if substitution takes places before final free throw:
+  game_data <- game_data |>
+    mutate(sub_during_free_throw = case_when(
+      (str_detect(visitor_description, "Free Throw 1 of 1") |
+         str_detect(visitor_description, "Free Throw 2 of 2") |
+         str_detect(visitor_description, "Free Throw 3 of 3")) &
+        (lag(is_sub) == 1) ~ 1,
+      (str_detect(home_description, "Free Throw 1 of 1") |
+         str_detect(home_description, "Free Throw 2 of 2") |
+         str_detect(home_description, "Free Throw 3 of 3")) &
+        (lag(is_sub) == 1) ~ 1,
+      .default = 0),
+      # Now if the sub is followed by this, then set new_stint_start to 0, but
+      # if this set a new stint to start post the final free throw:
+      new_stint_start = ifelse(is_sub == 1 & lead(sub_during_free_throw) == 1,
+                               0, new_stint_start),
+      new_stint_start = ifelse(lag(sub_during_free_throw) == 1,
+                               1, new_stint_start),
+      new_stint_start = ifelse(is.na(new_stint_start), 0, new_stint_start)
+    )
+  
+  # I think I can just filter out subs that are not new stints, and then just use
+  # the cumulative sum of the new stint start to effectively create a stint ID:
+  game_data <- game_data |>
+    filter(!(is_sub == 1 & new_stint_start == 0)) |>
+    mutate(stint_id = cumsum(new_stint_start) + 1)
+  
+  # Toughest part - need to count the number of possessions for each team during
+  # the stint... will rely on this for counting when a possession ends:
+  # https://squared2020.com/2017/09/18/deep-dive-on-regularized-adjusted-plus-minus-ii-basic-application-to-2017-nba-data-with-r/
+  # "Recall that a possession is ended by a converted last free throw, made field goal, defensive rebound, turnover, or end of period"
+  
+  game_data <- game_data |>
+    mutate(pos_ends = case_when(
+      str_detect(home_description, " PTS") &
+        str_detect(home_description, "Free Throw 1 of 2",
+                   negate = TRUE) &
+        str_detect(home_description, "Free Throw 2 of 3",
+                   negate = TRUE) ~ 1, # made field goals or free throws
+      str_detect(visitor_description, " PTS") & 
+        str_detect(visitor_description, "Free Throw 1 of 2",
+                   negate = TRUE) & 
+        str_detect(visitor_description, "Free Throw 2 of 3",
+                   negate = TRUE) ~ 1, 
+      str_detect(tolower(visitor_description), "rebound") &
+        str_detect(tolower(lag(home_description)), "miss ") ~ 1,
+      str_detect(tolower(home_description), "rebound") &
+        str_detect(tolower(lag(visitor_description)), "miss ") ~ 1,
+      str_detect(tolower(home_description), " turnover") ~ 1,
+      str_detect(tolower(visitor_description), " turnover") ~ 1,
+      str_detect(neutral_description, "End") ~ 1,
+      .default = 0
+    ))
+  
+  # Now the final part - compute the stint level summaries:
+  game_data |>
+    group_by(stint_id) |>
+    summarize(home_lineup = first(home_lineup),
+              away_lineup = first(away_lineup),
+              n_home_lineups = length(unique(home_lineup)),
+              n_away_lineups = length(unique(away_lineup)),
+              start_home_score = first(home_score),
+              end_home_score = last(home_score),
+              start_away_score = first(away_score),
+              end_away_score = last(away_score),
+              start_minutes = first(minute_game),
+              end_minutes = last(minute_game),
+              n_pos = sum(pos_ends),
+              .groups = "drop") |>
+    # Compute the necessary changes:
+    mutate(home_points = end_home_score - start_home_score,
+           away_points = end_away_score - start_away_score,
+           minutes = end_minutes - start_minutes,
+           margin = 100 * (home_points - away_points) / n_pos,
+           game_id = game_i) |>
+    # Just keep the main items:
+    dplyr::select(game_id, stint_id, home_lineup, away_lineup, n_pos,
+                  home_points, away_points, minutes, margin) |>
+    # Finally remove the useless stints with 0 possessions:
+    filter(n_pos != 0)
+  
+}
+
+# Create possibly version of the game stint data function:
+poss_get_game_stints <- possibly(.f = get_game_stint_data, 
+                                 otherwise = NULL)
+
+# And now apply this to each game in the season to generate the data:
+season_stint_data <- map_dfr(nba_season_games, ~poss_get_game_stints(.x))
+
+# How many games are in the data?
+length(unique(season_stint_data$game_id))
+# [1] 1225
+```
+
+
+```{r}
+# PURPOSE: Initialize NBA RAPM data for 2022-2023 season
+
+library(tidyverse)
+library(hoopR)
+
+# Gather games from last season -------------------------------------------
+
+nba_game_log <- nba_leaguegamelog(season = 2022)
+nba_game_log <- nba_game_log$LeagueGameLog
+
+# Get the regular season game IDs:
+nba_season_games <- nba_game_log |>
+  pull(GAME_ID) |>
+  unique()
+
+# Generate the stint-level data -------------------------------------------
+
+# Create a function that will be wrapped inside possibly to iterate across
+# games, returning NULL if there is an error:
+
+get_game_stint_data <- function(game_i) {
+  
+  game_data <- nba_pbp(game_id = game_i)
+  
+  # Populate first row values with 0 scores:
+  game_data$home_score[1] <- 0
+  game_data$away_score[1] <- 0
+  game_data$score_margin[1] <- 0
+  
+  # Populate the missing values using fill()
+  game_data <- game_data |>
+    fill(home_score, away_score, score_margin) 
+  
+  # Get the home lineups:
+  home_lineups <- apply(dplyr::select(game_data, home_player1, home_player2,
+                                      home_player3, home_player4, home_player5),
+                        1,
+                        function(x) {
+                          paste(sort(x), collapse = ("_"))
+                        })
+  
+  # Repeat for away:
+  away_lineups <- apply(dplyr::select(game_data, away_player1, away_player2,
+                                      away_player3, away_player4, away_player5),
+                        1,
+                        function(x) {
+                          paste(sort(x), collapse = ("_"))
+                        })
+  
+  # Join these columns:
+  game_data$home_lineup <- home_lineups
+  game_data$away_lineup <- away_lineups
+  
+  # Now there are a couple of ways to figure out the stints, but I think the
+  # best way is to use the substitution events - where a stint changes once
+  # a substitution takes places (but only if the previous event was NOT a substitution)
+  
+  # Start by making an indicator for the stint change:
+  game_data <- game_data |>
+    mutate(is_sub = ifelse(event_type == 8, 1, 0),
+           new_stint_start = ifelse((is_sub == 1) & (lead(is_sub) != 1),
+                                    1, 0))
+  
+  # Hmm have to figure out the free throw issue - for substitutions that take place
+  # during a free throw window, then the new stint should start after the free throw
+  
+  # Easiest way to track if substitution takes places before final free throw:
+  game_data <- game_data |>
+    mutate(sub_during_free_throw = case_when(
+      (str_detect(visitor_description, "Free Throw 1 of 1") |
+         str_detect(visitor_description, "Free Throw 2 of 2") |
+         str_detect(visitor_description, "Free Throw 3 of 3")) &
+        (lag(is_sub) == 1) ~ 1,
+      (str_detect(home_description, "Free Throw 1 of 1") |
+         str_detect(home_description, "Free Throw 2 of 2") |
+         str_detect(home_description, "Free Throw 3 of 3")) &
+        (lag(is_sub) == 1) ~ 1,
+      .default = 0),
+      # Now if the sub is followed by this, then set new_stint_start to 0, but
+      # if this set a new stint to start post the final free throw:
+      new_stint_start = ifelse(is_sub == 1 & lead(sub_during_free_throw) == 1,
+                               0, new_stint_start),
+      new_stint_start = ifelse(lag(sub_during_free_throw) == 1,
+                               1, new_stint_start),
+      new_stint_start = ifelse(is.na(new_stint_start), 0, new_stint_start)
+    )
+  
+  # I think I can just filter out subs that are not new stints, and then just use
+  # the cumulative sum of the new stint start to effectively create a stint ID:
+  game_data <- game_data |>
+    filter(!(is_sub == 1 & new_stint_start == 0)) |>
+    mutate(stint_id = cumsum(new_stint_start) + 1)
+  
+  # Toughest part - need to count the number of possessions for each team during
+  # the stint... will rely on this for counting when a possession ends:
+  # https://squared2020.com/2017/09/18/deep-dive-on-regularized-adjusted-plus-minus-ii-basic-application-to-2017-nba-data-with-r/
+  # "Recall that a possession is ended by a converted last free throw, made field goal, defensive rebound, turnover, or end of period"
+  
+  game_data <- game_data |>
+    mutate(pos_ends = case_when(
+      str_detect(home_description, " PTS") &
+        str_detect(home_description, "Free Throw 1 of 2",
+                   negate = TRUE) &
+        str_detect(home_description, "Free Throw 2 of 3",
+                   negate = TRUE) ~ 1, # made field goals or free throws
+      str_detect(visitor_description, " PTS") & 
+        str_detect(visitor_description, "Free Throw 1 of 2",
+                   negate = TRUE) & 
+        str_detect(visitor_description, "Free Throw 2 of 3",
+                   negate = TRUE) ~ 1, 
+      str_detect(tolower(visitor_description), "rebound") &
+        str_detect(tolower(lag(home_description)), "miss ") ~ 1,
+      str_detect(tolower(home_description), "rebound") &
+        str_detect(tolower(lag(visitor_description)), "miss ") ~ 1,
+      str_detect(tolower(home_description), " turnover") ~ 1,
+      str_detect(tolower(visitor_description), " turnover") ~ 1,
+      str_detect(neutral_description, "End") ~ 1,
+      .default = 0
+    ))
+  
+  # Now the final part - compute the stint level summaries:
+  game_data |>
+    group_by(stint_id) |>
+    summarize(home_lineup = first(home_lineup),
+              away_lineup = first(away_lineup),
+              n_home_lineups = length(unique(home_lineup)),
+              n_away_lineups = length(unique(away_lineup)),
+              start_home_score = first(home_score),
+              end_home_score = last(home_score),
+              start_away_score = first(away_score),
+              end_away_score = last(away_score),
+              start_minutes = first(minute_game),
+              end_minutes = last(minute_game),
+              n_pos = sum(pos_ends),
+              .groups = "drop") |>
+    # Compute the necessary changes:
+    mutate(home_points = end_home_score - start_home_score,
+           away_points = end_away_score - start_away_score,
+           minutes = end_minutes - start_minutes,
+           margin = 100 * (home_points - away_points) / n_pos,
+           game_id = game_i) |>
+    # Just keep the main items:
+    dplyr::select(game_id, stint_id, home_lineup, away_lineup, n_pos,
+                  home_points, away_points, minutes, margin) |>
+    # Finally remove the useless stints with 0 possessions:
+    filter(n_pos != 0)
+  
+}
+
+# Create possibly version of the game stint data function:
+poss_get_game_stints <- possibly(.f = get_game_stint_data, 
+                                 otherwise = NULL)
+
+# And now apply this to each game in the season to generate the data:
+season_stint_data <- map_dfr(nba_season_games, ~poss_get_game_stints(.x))
+
+# How many games are in the data?
+length(unique(season_stint_data$game_id))
+# [1] 1225
+
+# Nice - only missing 5 games
+
+# Save this dataset:
+write_csv(season_stint_data,
+          "data/nba_2223_season_stints.csv")
+
+# Create the RAPM design matrix -------------------------------------------
+
+# Will now create three datasets:
+
+# (1) The game-stint level context:
+game_stint_context <- season_stint_data |>
+  dplyr::select(game_id, stint_id, n_pos, home_points, away_points,
+                minutes, margin)
+
+# (2) home team players with values of 1:
+# Offense players:
+home_players_data <- season_stint_data %>%
+  dplyr::select(game_id, stint_id, home_lineup) %>%
+  separate_rows(home_lineup, sep = "_") %>%
+  mutate(on_court = 1) %>%
+  pivot_wider(id_cols = c("game_id", "stint_id"),
+              names_from = home_lineup,
+              values_from = on_court,
+              values_fill = 0)
+
+# Check that the columns are unique players:
+home_players_cols <- colnames(home_players_data)[3:ncol(home_players_data)]
+length(home_players_cols) == length(unique(home_players_cols))
+# [1] TRUE - good
+
+# (3) Repeat for away, except use -1 for away:
+away_players_data <- season_stint_data %>%
+  dplyr::select(game_id, stint_id, away_lineup) %>%
+  separate_rows(away_lineup, sep = "_") %>%
+  mutate(on_court = -1) %>%
+  pivot_wider(id_cols = c("game_id", "stint_id"),
+              names_from = away_lineup,
+              values_from = on_court,
+              values_fill = 0)
+
+# Check that the columns are unique players:
+away_players_cols <- colnames(away_players_data)[3:ncol(away_players_data)]
+length(away_players_cols) == length(unique(away_players_cols))
+# [1] TRUE - good
+
+# Stack the home and away together, take the sum so that we get one row for 
+# each game stint, where home lineup players are 1 and away lineup players are -1:
+game_stint_players_data <- home_players_data |>
+  bind_rows(away_players_data) |>
+  group_by(game_id, stint_id) |>
+  summarize(across(everything(), ~ sum(.x, na.rm = TRUE)),
+            .groups = "drop")
+
+# Join this back to the context and save:
+game_stint_rapm_data <- game_stint_context |>
+  left_join(game_stint_players_data,
+            by = c("game_id", "stint_id"))
+
+# Save this dataset:
+write_csv(game_stint_rapm_data,
+          # Compress this since it's fairly big
+          "data/nba_2223_season_rapm_data.csv.gz")
+
+
+# Get the player ids to join for viewing later ----------------------------
+
+nba_players <- nba_commonallplayers(season = 2022)
+nba_players <- nba_players$CommonAllPlayers
+
+# Grab the player ids from the RAPM data:
+player_ids <- game_stint_rapm_data |>
+  dplyr::select(-c(game_id, stint_id, n_pos, home_points, away_points,
+                   minutes, margin)) |>
+  colnames() |>
+  as.integer()
+
+player_table <- nba_players |>
+  filter(PERSON_ID %in% player_ids) |>
+  dplyr::select(PERSON_ID, DISPLAY_FIRST_LAST) |>
+  rename(player_id = PERSON_ID,
+         player_name = DISPLAY_FIRST_LAST) |>
+  distinct()
+
+# Great - they are all in here
+write_csv(player_table,
+          "data/nba_2223_player_table.csv")
+```
+
+
+```{r}
+nba_leaguedashplayerstats(season = 2023)
+```
+
+
+```{r}
+# You can install using the pacman package using the following code:
+if (!requireNamespace('pacman', quietly = TRUE)){
+  install.packages('pacman')
+}
+pacman::p_load_current_gh("sportsdataverse/hoopR", dependencies = TRUE, update = TRUE)
+
+#remote install if necessary
+remotes::install_github("saiemgilani/hoopR")
+```
+
+
+```{r}
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+```
+
+```{r}
+# extract clutch stat from regular season starting from 2001
+tc_data_01 <- nba_leaguedashteamclutch(season = "2001-02", season_type = "Regular Season")
+tc_data_02 <- nba_leaguedashteamclutch(season = "2002-03", season_type = "Regular Season")
+tc_data_03 <- nba_leaguedashteamclutch(season = "2003-04", season_type = "Regular Season")
+tc_data_04 <- nba_leaguedashteamclutch(season = "2004-05", season_type = "Regular Season")
+tc_data_05 <- nba_leaguedashteamclutch(season = "2005-06", season_type = "Regular Season")
+tc_data_06 <- nba_leaguedashteamclutch(season = "2006-07", season_type = "Regular Season")
+tc_data_07 <- nba_leaguedashteamclutch(season = "2007-08", season_type = "Regular Season")
+tc_data_08 <- nba_leaguedashteamclutch(season = "2008-09", season_type = "Regular Season")
+tc_data_09 <- nba_leaguedashteamclutch(season = "2009-10", season_type = "Regular Season")
+tc_data_10 <- nba_leaguedashteamclutch(season = "2010-11", season_type = "Regular Season")
+tc_data_11 <- nba_leaguedashteamclutch(season = "2011-12", season_type = "Regular Season")
+tc_data_12 <- nba_leaguedashteamclutch(season = "2012-13", season_type = "Regular Season")
+tc_data_13 <- nba_leaguedashteamclutch(season = "2013-14", season_type = "Regular Season")
+tc_data_14 <- nba_leaguedashteamclutch(season = "2014-15", season_type = "Regular Season")
+tc_data_15 <- nba_leaguedashteamclutch(season = "2015-16", season_type = "Regular Season")
+tc_data_16 <- nba_leaguedashteamclutch(season = "2016-17", season_type = "Regular Season")
+tc_data_17 <- nba_leaguedashteamclutch(season = "2017-18", season_type = "Regular Season")
+tc_data_18 <- nba_leaguedashteamclutch(season = "2018-19", season_type = "Regular Season")
+tc_data_19 <- nba_leaguedashteamclutch(season = "2019-20", season_type = "Regular Season")
+tc_data_20 <- nba_leaguedashteamclutch(season = "2020-21", season_type = "Regular Season")
+tc_data_21 <- nba_leaguedashteamclutch(season = "2021-22", season_type = "Regular Season")
+```
+
+
+```{r}
+tc_data_01 <- nba_leaguedashplayerclutch(season = "2023-24", season_type = "Regular Season")
+```
+
+
+```{r}
+tc_data_01
+```
+
+```{r}
+nba_leaguedashplayerstats(season = "2023-24", season_type = "Regular Season")
+```
+
+
+```{r}
+tictoc::tic()
+progressr::with_progress({
+  nba_pbp <- hoopR::load_nba_pbp()
+})
+tictoc::toc()
+```
+
+
+```{r}
+nba_pbp
+```
+
+```{r}
+# plan(multiprocess)
+# play_logs_all <- play_by_play_v2(game_ids = unique(games$idGame))
+```
+
+
+```{r}
+nbastats <- fread("../input/nba-playbyplay-and-shotdetails-data-19962021/nbastats_1996.csv", nrows=10)
+str(nbastats)
+```
+
+
+
+
+
+
+
+
+```{r}
+df <- read_csv("https://raw.githubusercontent.com/ramirobentes/nba_pbp_data/refs/heads/main/lineup-final2022/data.csv")
+```
+
+
+
+
+
+
+
+
+```{r}
+df
+```
+
+
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(cowplot)
+library(hexbin)
+```
+
+
+
+```{r}
+library(tidyverse)
+library(nbastatR)
+library(hoopR)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+nba_apm_model_data_2021 <- nba_rapm_data_2021 |>
+  dplyr::select(-c(game_id, stint_id, n_pos, home_points, away_points, minutes,
+                   margin))
+```
+
+
+```{r}
+rosenbaum_model_2021 <- lm(score_diff ~ 0 + ., data = nba_apm_model_data_2021,
+                      weights = nba_rapm_data_2021$n_pos)
+```
+
+
+```{r}
+rosenbaum_coef_2021 <- tidy(rosenbaum_model_2021)
+rosenbaum_coef_2021
+```
+
+
+```{r}
+rosenbaum_coef_2021 <- rosenbaum_coef_2021 |>
+  # First convert the term column to numeric:
+  mutate(term = as.numeric(str_remove_all(term, "`"))) |>
+  # Now join the player names:
+  left_join(player_2021, by = c("term" = "player_id"))
+rosenbaum_coef_2021
+```
+
+
+```{r}
+rosenbaum_coef_2021 |>
+  slice_max(estimate, n = 10)
+```
+
+```{r}
+rosenbaum_coef_2021 |>
+  slice_min(estimate, n = 10)
+```
+
+
+```{r}
+combined_df %>%
+  distinct()
+```
+
+
+```{r}
+player_combined_df[!duplicated(player_combined_df)]
+```
+
+
+
+```{r}
+nba_margin_apm_model_data_combined <- nba_rapm_data_combined |>
+  dplyr::select(-c(game_id, stint_id, n_pos, home_points, away_points, minutes,
+                   score_diff))
+```
+
+`
+
+```{r}
+nba_margin_apm_model_data_combined
+```
+
+
+
+```{r}
+plot(tidy_en_coef_combined)
+```
+
+
+```{r}
+sum(is.na(combined_df))
+```
+
+```{r}
+colnames(combined_df)
+```
+
+
+```{r}
+combined_df[rowSums(is.na(combined_df))==0,]
+```
+
+
+```{r}
+season_2122
+```
+
+
+```{r}
+nba_rapm_data_2021 <- season_2021 |>
+  mutate(score_diff = home_points - away_points)
+```
+
+```{r}
+nba_rapm_data_2021 <- nba_rapm_data_2021 %>%
+  relocate(score_diff, .after=margin)
+```
+
+```{r}
+nba_rapm_data_2021
+```
+
+
+```{r}
+# Now for ease, create a dataset that only has the response and player columns:
+nba_margin_apm_model_data_2021 <- nba_rapm_data_2021 |>
+  dplyr::select(-c(game_id, stint_id, n_pos, home_points, away_points, minutes,
+                   score_diff))
+
+# Fit the model (notice we do not include an intercept term)
+rosenbaum_margin_model_2021 <- lm(margin ~ 0 + ., data = nba_margin_apm_model_data_2021)
+
+# Get the coefficients and join player names:
+rosenbaum_margin_coef_2021 <- tidy(rosenbaum_margin_model_2021) |>
+  # First convert the term column to numeric:
+  mutate(term = as.numeric(str_remove_all(term, "`"))) |>
+  # Now join the player names:
+  left_join(player_2021, by = c("term" = "player_id"))
+
+# View top 10:
+rosenbaum_margin_coef_2021 |>
+  slice_max(estimate, n = 10)
+```
+
+
+```{r}
+rosenbaum_margin_model_2021
+```
+
+
+
+
+
+
+```{r}
+player_matrix_2021 <- nba_margin_apm_model_data_2021 |>
+  dplyr::select(-margin) |>
+  as.matrix()
+```
+
+
+
+## Lasso
+
+```{r}
+# View help for function with:
+# help(cv.glmnet)
+
+# lasso with 10 fold cv, no intercept and no standardization
+fit_lasso_cv_2021 <- cv.glmnet(x = player_matrix_2021,
+                          y = nba_margin_apm_model_data_2021$margin,
+                          alpha = 1,
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+plot(fit_lasso_cv_2021)
+```
+
+
+```{r}
+plot(fit_lasso_cv_2021$glmnet.fit, xvar = "lambda")
+```
+
+
+```{r}
+tidy_lasso_coef_2021 <- tidy(fit_lasso_cv_2021$glmnet.fit)
+tidy_lasso_coef_2021
+```
+
+
+```{r}
+rapm_lasso_coef_2021 <- tidy_lasso_coef_2021 |>
+  filter(lambda == fit_lasso_cv_2021$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_2021, by = c("term" = "player_id"))
+```
+
+
+```{r}
+rapm_lasso_coef_2021 |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+```{r}
+rapm_lasso_coef_2021 |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+```{r}
+rapm_lasso_coef_2021 |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Lasso estimate", y = "Count") +
+  theme_bw()
+```
+
+
+## Ridge
+
+
+
+```{r}
+# View help for function with:
+# help(cv.glmnet)
+
+# ridge with 10 fold cv, no intercept and no standardization
+fit_ridge_cv_2021 <- cv.glmnet(x = player_matrix_2021,
+                          y = nba_margin_apm_model_data_2021$margin,
+                          alpha = 0,
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+plot(fit_ridge_cv_2021)
+```
+
+
+
+```{r}
+plot(fit_ridge_cv_2021$glmnet.fit, xvar = "lambda")
+```
+
+```{r}
+tidy_ridge_coef_2021 <- tidy(fit_ridge_cv_2021$glmnet.fit)
+tidy_ridge_coef_2021
+```
+
+
+```{r}
+rapm_ridge_coef_2021 <- tidy_ridge_coef_2021 |>
+  filter(lambda == fit_ridge_cv_2021$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_2021, by = c("term" = "player_id"))
+```
+
+
+```{r}
+rapm_ridge_coef_2021 |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+
+```{r}
+rapm_ridge_coef_2021 |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+
+```{r}
+rapm_ridge_coef_2021 |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Ridge estimate", y = "Count") +
+  theme_bw()
+```
+
+
+
+
+
+
+
+## Elastic Net
+
+```{r}
+# View help for function with:
+# help(cv.glmnet)
+
+# lasso with 10 fold cv, no intercept and no standardization
+fit_en_cv_2021 <- cv.glmnet(x = player_matrix_2021,
+                          y = nba_margin_apm_model_data_2021$margin,
+                          alpha = 0.5,   # alpha set to 0.5 for elastic net
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+plot(fit_en_cv_2021)
+```
+
+
+```{r}
+plot(fit_en_cv_2021$glmnet.fit, xvar = "lambda")
+```
+
+
+```{r}
+tidy_en_coef_2021 <- tidy(fit_en_cv_2021$glmnet.fit)
+tidy_en_coef_2021
+```
+
+
+```{r}
+rapm_en_coef_2021 <- tidy_en_coef_2021 |>
+  filter(lambda == fit_en_cv_2021$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_2021, by = c("term" = "player_id"))
+```
+
+
+```{r}
+rapm_en_coef_2021 |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+```{r}
+rapm_en_coef_2021 |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+```{r}
+rapm_en_coef_2021 |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM EN estimate", y = "Count") +
+  theme_bw()
+```
+
+
+
+
+## Ridge
+
+
+
+```{r}
+# View help for function with:
+# help(cv.glmnet)
+
+# ridge with 10 fold cv, no intercept and no standardization
+fit_ridge_cv_2021 <- cv.glmnet(x = player_matrix_2021,
+                          y = nba_margin_apm_model_data_2021$margin,
+                          alpha = 0,
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+plot(fit_ridge_cv_2021)
+```
+
+
+
+```{r}
+plot(fit_ridge_cv_2021$glmnet.fit, xvar = "lambda")
+```
+
+```{r}
+tidy_ridge_coef_2021 <- tidy(fit_ridge_cv_2021$glmnet.fit)
+tidy_ridge_coef_2021
+```
+
+
+```{r}
+rapm_ridge_coef_2021 <- tidy_ridge_coef_2021 |>
+  filter(lambda == fit_ridge_cv_2021$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_2021, by = c("term" = "player_id"))
+```
+
+
+```{r}
+rapm_ridge_coef_2021 |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+
+```{r}
+rapm_ridge_coef_2021 |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+
+```{r}
+rapm_ridge_coef_2021 |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Ridge estimate", y = "Count") +
+  theme_bw()
+```
+
+
+
+
+
+
+
+## Elastic Net
+
+```{r}
+# View help for function with:
+# help(cv.glmnet)
+
+# lasso with 10 fold cv, no intercept and no standardization
+fit_en_cv_2021 <- cv.glmnet(x = player_matrix_2021,
+                          y = nba_margin_apm_model_data_2021$margin,
+                          alpha = 0.5,   # alpha set to 0.5 for elastic net
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+plot(fit_en_cv_2021)
+```
+
+
+```{r}
+plot(fit_en_cv_2021$glmnet.fit, xvar = "lambda")
+```
+
+
+```{r}
+tidy_en_coef_2021 <- tidy(fit_en_cv_2021$glmnet.fit)
+tidy_en_coef_2021
+```
+
+
+```{r}
+rapm_en_coef_2021 <- tidy_en_coef_2021 |>
+  filter(lambda == fit_en_cv_2021$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_2021, by = c("term" = "player_id"))
+```
+
+
+```{r}
+rapm_en_coef_2021 |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+```{r}
+rapm_en_coef_2021 |>
+  slice_min(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate)
+```
+
+
+```{r}
+rapm_en_coef_2021 |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM EN estimate", y = "Count") +
+  theme_bw()
+```
+
+
+
+```{r}
+player_minutes %>% 
+  pivot_longer(cols = `201142`:`1631167`,
+               names_to = "player_id", 
+               values_to = "minutes")
+```
+
+
+```{r}
+nba_rapm_data_combined <- na.omit(nba_rapm_data_combined)
+```
+
+
+```{r}
+log(0.1315)
+```
+
+
+
+```{r}
+str(fit_en_cv_combined)
+```
+
+
+
+
+```{r}
+# With train-test split
+set.seed(1234)
+# Now for ease, create a dataset that only has the response and player columns:
+nba_margin_apm_model_data_combined <- nba_rapm_data_combined |>
+  dplyr::select(-c(game_id, stint_id, n_pos, home_points, away_points, minutes,
+                   score_diff))
+
+
+#partition data frame into training and testing sets
+train_indices <- createDataPartition(nba_margin_apm_model_data_combined$margin, times=1, p=.8, list=FALSE)
+
+#create training set
+nba_margin_apm_model_data_combined_train <- nba_margin_apm_model_data_combined[train_indices , ]
+
+#create testing set
+nba_margin_apm_model_data_combined_test  <- nba_margin_apm_model_data_combined[-train_indices, ]
+
+#view number of rows in each set
+#nrow(df_train)
+
+## do train-test split - check other model documentation for train-test split; in sample vs out of sample accuracy
+
+# Fit the model (notice we do not include an intercept term)
+rosenbaum_margin_model_combined_train <- lm(margin ~ 0 + ., data = nba_margin_apm_model_data_combined_train)
+
+# Get the coefficients and join player names:
+rosenbaum_margin_coef_combined_train <- tidy(rosenbaum_margin_model_combined_train) |>
+  # First convert the term column to numeric:
+  mutate(term = as.numeric(str_remove_all(term, "`"))) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+
+# View top 10:
+rosenbaum_margin_coef_combined_train |>
+  slice_max(estimate, n = 10)
+```
+
+
+```{r}
+predictions <- predict(rosenbaum_margin_model_combined_train, newdata = nba_margin_apm_model_data_combined_test)
+```
+
