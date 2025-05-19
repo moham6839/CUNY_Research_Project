@@ -1,0 +1,318 @@
+---
+title: "Combined Dataset"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(hoopR)
+library(glmnet)
+library(caret)
+library(broom)
+library(rstanarm)
+library(rsample)
+library(brms)
+library(yardstick)
+library(performance)
+library(modelsummary)
+library(Metrics)
+library(bayesplot)
+library(loo)
+library(bayestestR)
+library(bayesreg)
+library(reactable)
+library(gridExtra)
+library(grid)
+library(gt)
+library(webshot)
+library(cowplot)
+```
+
+```{r}
+set.seed(1234)
+```
+
+
+# 2020-21 Season
+
+
+```{r}
+season_2021 <- read_csv("data/nba_2021_season_rapm_data.csv.gz")
+```
+
+
+
+```{r}
+player_2021 <- read_csv("data/nba_2021_player_table.csv")
+```
+
+
+## 2021-22 Season
+
+
+```{r}
+season_2122 <- read_csv("data/nba_2122_season_rapm_data.csv.gz")
+```
+
+
+```{r}
+player_2122 <- read_csv("data/nba_2122_player_table.csv")
+```
+
+
+
+## 2022-23 Season
+
+
+```{r}
+season_2223 <- read_csv("data/nba_2223_season_rapm_data.csv.gz")
+```
+
+
+
+```{r}
+player_2223 <- read_csv("data/nba_2223_player_table.csv")
+```
+
+
+
+
+```{r}
+season_2324 <- read_csv("data/nba_2324_season_rapm_data.csv.gz")
+```
+
+
+
+
+
+
+```{r}
+player_2324 <- read_csv("data/nba_2324_player_table.csv")
+```
+
+
+
+## Combining All Four Seasons
+
+
+```{r}
+combined_df <- bind_rows(season_2021, season_2122, season_2223, season_2324)
+```
+
+
+```{r}
+combined_df <- combined_df %>% 
+  replace(is.na(.), 0)
+```
+
+```{r}
+head(combined_df)
+```
+
+
+
+```{r}
+# pivot to long - total minutes per player
+player_minutes <- combined_df %>%
+  summarise(across(8:892, ~ sum(abs(.x) * minutes, na.rm = TRUE))) %>%
+  pivot_longer(cols = `201142`:`1631167`,
+               names_to = "player_id", 
+               values_to = "minutes") %>%
+  mutate(player_id = as.numeric(player_id))
+```
+
+
+
+
+
+
+```{r}
+head(player_minutes, 20)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+player_combined_df <- bind_rows(player_2021, player_2122, player_2223, player_2324) %>%
+  distinct()
+head(player_combined_df, 20)
+```
+
+```{r}
+player_combined_df <- player_combined_df %>%
+  left_join(player_minutes, by = c("player_id")) %>%
+  arrange(desc(minutes))
+head(player_combined_df, 20)
+```
+
+
+
+
+```{r}
+ggplot(player_minutes, aes(x = minutes)) +
+  geom_histogram() + # Create histogram with specified binwidth
+  labs(title = "Distribution of Player Total Minutes Played",  # Add a title
+       x = "Player Minutes",  # Add x-axis label
+       y = "Number of Players") +  # Add y-axis label
+  theme_minimal() + # Use a minimal theme
+  theme(panel.grid.major = element_blank(), # Remove gridlines
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) # Remove box
+        #axis.line = element_blank(),
+        #panel.background = element_rect(fill = "white", color = "white"))
+```
+
+
+
+
+
+
+
+
+
+
+
+## Adjusted Plus/Minus (APM)
+
+```{r}
+# Creating column for point differential
+nba_rapm_data_combined <- combined_df |>
+  mutate(score_diff = home_points - away_points) 
+```
+
+
+
+
+```{r}
+nba_rapm_data_combined <- nba_rapm_data_combined %>%
+  relocate(score_diff, .after=margin)
+```
+
+
+
+```{r}
+# Without train-test split
+set.seed(1234)
+# Now for ease, create a dataset that only has the response and player columns:
+nba_margin_apm_model_data_combined <- nba_rapm_data_combined |>
+  dplyr::select(-c(game_id, stint_id, n_pos, home_points, away_points, minutes,
+                   score_diff))
+
+## do train-test split - check other model documentation for train-test split; in sample vs out of sample accuracy
+
+# Fit the model (notice we do not include an intercept term)
+rosenbaum_margin_model_combined <- lm(margin ~ 0 + ., data = nba_margin_apm_model_data_combined)
+
+# Get the coefficients and join player names:
+rosenbaum_margin_coef_combined <- tidy(rosenbaum_margin_model_combined) |>
+  # First convert the term column to numeric:
+  mutate(term = as.numeric(str_remove_all(term, "`"))) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+
+# View top 10:
+rosenbaum_margin_coef_combined |>
+  slice_max(estimate, n = 10) |>
+  dplyr::select(term, player_name, estimate, minutes)
+```
+
+
+## Modified NBA Player Dataset
+
+
+
+
+```{r}
+median(player_combined_df$minutes)
+```
+
+
+
+
+```{r}
+modified_player_combined_df <- player_combined_df |>
+  filter(minutes >= median(player_combined_df$minutes))
+```
+
+
+```{r}
+head(modified_player_combined_df)
+```
+
+
+
+
+```{r}
+extra_cols <- c("margin")
+
+# Combine desired columns: from df2$var_names and the extra ones
+cols_to_keep <- union(modified_player_combined_df$player_id, extra_cols)
+
+# Filter df1 to keep only those columns
+# df1_filtered <- df1[, names(df1) %in% cols_to_keep]
+
+df_modified <- nba_margin_apm_model_data_combined[, names(nba_margin_apm_model_data_combined) %in% cols_to_keep]
+```
+
+
+```{r}
+head(df_modified)
+```
+
+
+
+
+
+
+
+## Transforming Original Dataset into Matrix
+
+
+
+```{r}
+player_matrix_combined <- nba_margin_apm_model_data_combined |>
+  dplyr::select(-margin) |>
+  as.matrix()
+```
+
+
+
+## Transforming Modified Dataset into Matrix
+
+
+```{r}
+player_matrix_combined_modified <- df_modified |>
+  dplyr::select(-margin) |>
+  as.matrix()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

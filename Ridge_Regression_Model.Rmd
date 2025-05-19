@@ -1,0 +1,361 @@
+---
+title: "Ridge Regression"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Ridge
+
+
+```{r}
+set.seed(1234)
+# View help for function with:
+# help(cv.glmnet)
+lambdas <- 10^seq(2, -3, by = -.1)
+# ridge with 10 fold cv, no intercept and no standardization
+fit_ridge_cv_combined <- cv.glmnet(x = player_matrix_combined,
+                          y = nba_margin_apm_model_data_combined$margin,
+                          alpha = 0, # alpha set to 0 is Ridge
+                          lambda = lambdas,
+                          #type.measure = "mse",
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+fit_ridge_cv_combined$lambda.min
+```
+
+
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_ridge_cv_combined)
+```
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_ridge_cv_combined$glmnet.fit, xvar = "lambda")
+```
+
+
+```{r}
+set.seed(1234)
+tidy_ridge_coef_combined <- tidy(fit_ridge_cv_combined$glmnet.fit)
+tidy_ridge_coef_combined
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined <- tidy_ridge_coef_combined |>
+  filter(lambda == fit_ridge_cv_combined$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_percentile <- rapm_ridge_coef_combined %>%
+  mutate(estimate = round(estimate, 2)) %>%
+  mutate(player_percentile = round(percent_rank(estimate), 2) * 100) %>%
+  arrange(desc(player_percentile))
+rapm_ridge_coef_combined_percentile
+```
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_percentile |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(term, player_name, estimate, minutes, player_percentile) %>%
+  reactable()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_percentile |>
+  slice_min(estimate, n = 50) |>
+  dplyr::select(term, player_name, estimate, minutes, player_percentile) %>%
+  reactable()
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_percentile |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Ridge estimate", y = "Count", title = "Histogram of RAPM Ridge Model for NBA Players") +
+  theme_bw()
+```
+
+
+```{r}
+ggplot(data=rapm_ridge_coef_combined_percentile[1:30, ], aes(x=reorder(player_name, -estimate), y=estimate)) +
+  geom_bar(stat="identity", 
+           position="dodge",
+           fill = "blue") +
+  geom_text(aes(label = estimate,
+                hjust = -.25,
+                vjust = 0.25),
+            size = 2.3) +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(), # Remove gridlines
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) + # Remove box
+  labs(title="Top 30 NBA Players RAPM Using Ridge Regression Model (2020-2024)",
+       y="RAPM Ridge Estimate",
+       x="Player") +
+  theme(plot.title = element_text(hjust = 1.5)) +
+  coord_flip()
+```
+
+
+```{r}
+set.seed(1234)
+evaluate_ridge_model <- function(model, X, y) {
+  y_pred <- predict(model, newx = X, s = "lambda.min")
+  n <- length(y)
+  lambda_idx <- which(model$lambda == model$lambda.min)
+  p <- model$glmnet.fit$df[lambda_idx]
+  sse <- sum((y - y_pred)^2)
+  sst <- sum((y - mean(y))^2)
+
+  r_squared <- 1 - sse / sst
+  adj_r_squared <- 1 - (1 - r_squared) * (n - 1) / (n - p - 1)
+  rmse <- sqrt(mean((y - y_pred)^2))
+  mae <- mean(abs(y - y_pred))
+
+  return(list(
+    R_squared = r_squared,
+    Adjusted_R_squared = adj_r_squared,
+    RMSE = rmse,
+    MAE = mae
+  ))
+}
+```
+
+
+```{r}
+set.seed(1234)
+ridge_results <- evaluate_ridge_model(fit_ridge_cv_combined, player_matrix_combined, 
+                                      nba_margin_apm_model_data_combined$margin)
+```
+
+
+```{r}
+print(ridge_results)
+```
+
+
+
+
+
+
+## Ridge with Modified Player Dataset
+
+
+```{r}
+set.seed(1234)
+# View help for function with:
+# help(cv.glmnet)
+lambdas <- 10^seq(2, -3, by = -.1)
+# ridge with 10 fold cv, no intercept and no standardization
+fit_ridge_cv_combined_modified <- cv.glmnet(x = player_matrix_combined_modified,
+                          y = df_modified$margin,
+                          alpha = 0, # alpha set to 0 for Ridge
+                          lambda = lambdas,
+                          #type.measure = "mse",
+                          intercept = FALSE,
+                          standardize = FALSE)
+```
+
+
+```{r}
+fit_ridge_cv_combined_modified$lambda.min
+```
+
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_ridge_cv_combined_modified)
+```
+
+
+
+```{r}
+set.seed(1234)
+plot(fit_ridge_cv_combined_modified$glmnet.fit, xvar = "lambda")
+```
+
+
+```{r}
+set.seed(1234)
+tidy_ridge_coef_combined_modified <- tidy(fit_ridge_cv_combined_modified$glmnet.fit)
+tidy_ridge_coef_combined_modified
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_modified <- tidy_ridge_coef_combined_modified |>
+  filter(lambda == fit_ridge_cv_combined_modified$lambda.min) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(modified_player_combined_df, by = c("term" = "player_id"))
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+rapm_ridge_coef_combined_percentile_modified <- rapm_ridge_coef_combined_modified %>%
+  mutate(estimate = round(estimate, 2)) %>%
+  mutate(player_percentile = round(percent_rank(estimate), 2) * 100) %>%
+  arrange(desc(player_percentile))
+rapm_ridge_coef_combined_percentile_modified
+```
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_percentile_modified |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(term, player_name, estimate, minutes, player_percentile) %>%
+  reactable()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_percentile_modified |>
+  slice_min(estimate, n = 50) |>
+  dplyr::select(term, player_name, estimate, minutes, player_percentile) %>%
+  reactable()
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_ridge_coef_combined_percentile_modified |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Ridge estimate", y = "Count", title = "Histogram of RAPM Ridge Model for NBA Players \n Who Played Over Median Minutes") +
+  theme_bw()
+```
+
+
+
+
+```{r}
+ggplot(data=rapm_ridge_coef_combined_percentile_modified[1:30, ], aes(x=reorder(player_name, -estimate), y=estimate)) +
+  geom_bar(stat="identity", 
+           position="dodge",
+           fill = "red") +
+  geom_text(aes(label = estimate,
+                hjust = -.25,
+                vjust = 0.25),
+            size = 2.3) +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(), # Remove gridlines
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) + # Remove box
+  labs(title="Top 30 NBA Players RAPM Using Ridge Regression Model \n with Modified Dataset (2020-2024)",
+       y="RAPM Estimate",
+       x="Player") +
+  #theme(plot.title = element_text(hjust = 0.8)) +
+  coord_flip()
+```
+
+
+
+
+
+
+```{r}
+ridge_results_modified <- evaluate_ridge_model(fit_ridge_cv_combined_modified, player_matrix_combined_modified, 
+                                      df_modified$margin)
+```
+
+
+```{r}
+print(ridge_results_modified)
+```
+
+
+
+
+

@@ -333,7 +333,7 @@ lineup_game
 
 
 ```{r}
-write.csv(lineup_game, "2021-22_pbp_data.csv")
+#write.csv(lineup_game, "2021-22_pbp_data.csv")
 ```
 
 
@@ -344,8 +344,8 @@ library(zoo)
 library(nbastatR)
 library(future)
 
-lineup_game <- read_csv("2021-22_pbp_data.csv",
-                        col_types = cols(timeQuarter = "c"))
+# lineup_game <- read_csv("2021-22_pbp_data.csv",
+#                         col_types = cols(timeQuarter = "c"))
 ```
 
 

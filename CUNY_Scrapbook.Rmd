@@ -666,6 +666,14 @@ player_combined_df[!duplicated(player_combined_df)]
 ```
 
 
+```{r}
+# Example: check for duplicates in column 'your_column'
+player_combined_df[duplicated(player_combined_df$player_name), ]
+
+```
+
+
+
 
 ```{r}
 nba_margin_apm_model_data_combined <- nba_rapm_data_combined |>
@@ -1165,4 +1173,231 @@ rosenbaum_margin_coef_combined_train |>
 ```{r}
 predictions <- predict(rosenbaum_margin_model_combined_train, newdata = nba_margin_apm_model_data_combined_test)
 ```
+
+
+
+
+
+```{r}
+# RMSE from cross-validation
+print(paste("Cross-Validated RMSE:", min(cv_ridge$cvm)))
+```
+
+
+```{r}
+player_combined_df |>
+  filter(player_id %in% c(1629665, 1626155, 1628591, 1630693, 1629602, 1630701, 1629232))
+```
+
+
+$$
+\hat{\beta}^{ridge} = \arg\min_{\beta} \left\{ \sum_{i=1}^{n}(y_i - \beta_0 - \sum_{j=1}^{p} \beta_j x_{ij})^2 + \lambda \sum_{j=1}^{p} \beta_j^2 \right\}
+$$
+
+
+
+$$
+\hat{\boldsymbol{\beta}}^{ridge} = \underset{\boldsymbol{\beta} \in \mathbb{R}^p}{\text{arg min}} \sum_{t = 1}^T (y_t - X_t \boldsymbol{\beta})^2 + \lambda \sum_{j = 1}^p \beta_p^2
+$$
+
+
+$$
+p(\boldsymbol{\beta} \mid \mathbf{y}, \mathbf{X}) \propto p(\mathbf{y} \mid \mathbf{X}, \boldsymbol{\beta}) \cdot p(\boldsymbol{\beta})
+$$
+
+
+```{r}
+# Keep only the columns in df1 that are listed in df2$var_names
+df_modified <- nba_margin_apm_model_data_combined[, names(nba_margin_apm_model_data_combined) %in% modified_player_combined_df$player_id]
+```
+
+
+```{r}
+df_modified
+```
+
+
+
+
+```{r}
+library(gridExtra)
+```
+
+```{r}
+metrics <- bind_rows(ridge_results,ridge_results_modified, lasso_results, lasso_results_modified, en_results, en_results_modified, bayes_rmse, bayes_rmse_mod)
+metrics
+```
+
+```{r}
+metrics_table <- data.frame(
+  Model = c("Ridge Regression",
+            "Ridge Regression Modified Dataset",
+            "Lasso Regression",
+            "Lasso Regression Modified Dataset",
+            "Elastic Net Regression",
+            "Elastic Net Regression Modified Dataset",
+            "Bayesian Linear Regression",
+            "Bayesian Linear Regression Modified Dataset"),
+  c(ridge_results, ridge_results_modified, lasso_results, lasso_results_modified,
+           en_results, en_results_modified, bayes_rmse, bayes_rmse_mod)
+  #Adjusted_R2 = round(c(adj_r2_1, adj_r2_2, adj_r2_3), 3)
+)
+
+```
+
+
+```{r}
+metrics_table
+```
+
+
+```{r}
+library(kableExtra)
+set.seed(123)
+combine_results <- rbind(ridge_results,ridge_results_modified, lasso_results, lasso_results_modified,
+                         en_results, en_results_modified)
+combine_results |>
+  kbl() |>
+  kable_styling(latex_options="scale_down", c("striped", "hover", "condensed", full_width=F))
+```
+
+
+
+```{r}
+library(kableExtra)
+set.seed(123)
+combine_results_bayes <- rbind(bayes_rmse, bayes_rmse_mod)
+combine_results_bayes |>
+  kbl() |>
+  kable_styling(latex_options="scale_down", c("striped", "hover", "condensed", full_width=F))
+```
+
+
+
+```{r}
+table_image <- tableGrob(combine_results)
+```
+
+```{r}
+table_image
+```
+
+
+```{r}
+metrics_table <- data.frame(
+  Model = c("Ridge Regression",
+            "Ridge Regression Modified Dataset",
+            "Lasso Regression",
+            "Lasso Regression Modified Dataset",
+            "Elastic Net Regression",
+            "Elastic Net Regression Modified Dataset",
+            "Bayesian Linear Regression",
+            "Bayesian Linear Regression Modified Dataset"),
+  
+  RMSE = round(c(ridge_results$RMSE.1[1],
+                 ridge_results_modified$RMSE.1[1],
+                 lasso_results$RMSE.1[1],
+                 lasso_results_modified$RMSE.1[1],
+                 en_results$RMSE.1[1],
+                 en_results_modified$RMSE.1[1],
+                 bayes_rmse, 
+                 bayes_rmse_mod), 3),
+
+  R_Squared = round(c(ridge_results$R_squared.1[1],
+                      ridge_results_modified$R_squared.1[1],
+                      lasso_results$R_squared.1[1],
+                      lasso_results_modified$R_squared.1[1],
+                      en_results$R_squared.1[1],
+                      en_results_modified$R_squared.1[1],
+                      NA,
+                      NA), 3),
+
+  Adjusted_R2 = round(c(ridge_results$Adjusted_R_squared.1[1],
+                        ridge_results_modified$Adjusted_R_squared.1[1],
+                        lasso_results$Adjusted_R_squared.1[1],
+                        lasso_results_modified$Adjusted_R_squared.1[1],
+                        en_results$Adjusted_R_squared.1[1],
+                        en_results_modified$Adjusted_R_squared.1[1],
+                        NA,
+                        NA), 3)
+)
+
+```
+
+```{r}
+metrics_table
+```
+
+
+## Player results
+
+
+### Ridge Regression
+
+```{r}
+set.seed(1234)
+ridge_player_results <- rapm_ridge_coef_combined_percentile |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(term, player_name, estimate, minutes, player_percentile) %>%
+   gt() %>%
+  tab_header(
+    title = "Model Performance Metrics")
+```
+
+
+
+```{r}
+# Save as PNG
+gtsave(ridge_player_results, "ridge_player_results.png")
+```
+
+
+
+
+
+
+
+## Bayesian Linear Regression (Matrix Form)
+
+We define the model as follows:
+
+$$
+\mathbf{y} \mid \mathbf{X}, \boldsymbol{\beta}, \sigma^2 \sim \mathcal{N}(\mathbf{X} \boldsymbol{\beta}, \sigma^2 \mathbf{I}_n)
+$$
+
+The prior distribution for the coefficients:
+
+$$
+\boldsymbol{\beta} \sim \mathcal{N}(\boldsymbol{\mu}_0, \Sigma_0)
+$$
+
+The posterior distribution is:
+
+$$
+\boldsymbol{\beta} \mid \mathbf{y}, \mathbf{X}, \sigma^2 \sim \mathcal{N}(\boldsymbol{\mu}_n, \Sigma_n)
+$$
+
+Where:
+
+$$
+\Sigma_n = \left( \frac{1}{\sigma^2} \mathbf{X}^\top \mathbf{X} + \Sigma_0^{-1} \right)^{-1}
+$$
+
+$$
+\boldsymbol{\mu}_n = \Sigma_n \left( \frac{1}{\sigma^2} \mathbf{X}^\top \mathbf{y} + \Sigma_0^{-1} \boldsymbol{\mu}_0 \right)
+$$
+
+
+
+$$
+\hat{\boldsymbol{\beta}} = \underset{\boldsymbol{\beta}}{\arg\min} \left\{
+\frac{1}{n} \sum_{i=1}^{n} (y_i - \mathbf{x}_i^\top \boldsymbol{\beta})^2
++ \lambda \left[ \alpha \|\boldsymbol{\beta}\|_1 + (1 - \alpha) \|\boldsymbol{\beta}\|_2^2 \right]
+\right\}
+$$
+
+
+$$
+\mathbf{y} \mid \mathbf{X}, \boldsymbol{\beta}, \sigma^2 \sim \mathcal{N}(\mathbf{X}\boldsymbol{\beta}, \sigma^2 \mathbf{I})
+$$
 
