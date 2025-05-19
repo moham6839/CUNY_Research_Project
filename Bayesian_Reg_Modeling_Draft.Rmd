@@ -1279,7 +1279,7 @@ n <- nobs(rstan_model_bayes2)
 p <- length(attr(rstan_model_bayes2$terms, "term.labels"))
 
 # Classic-style adjusted R² (approximate, not Bayesian)
-adj_r2_bayes <- 1 - ((1 - r2_mean) * (n - 1)) / (n - p - 1)
+adj_r2_bayes <- 1 - ((1 - R_squared_bayes) * (n - 1)) / (n - p - 1)
 print(adj_r2_bayes)
 
 ```
@@ -1384,7 +1384,7 @@ n <- nobs(rstan_model_bayes_modified2)
 p <- length(attr(rstan_model_bayes_modified2$terms, "term.labels"))
 
 # Classic-style adjusted R² (approximate, not Bayesian)
-adj_r2_bayes_modified <- 1 - ((1 - r2_mean) * (n - 1)) / (n - p - 1)
+adj_r2_bayes_modified <- 1 - ((1 - R_squared_bayes_modified) * (n - 1)) / (n - p - 1)
 print(adj_r2_bayes_modified)
 
 ```

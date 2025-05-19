@@ -64,7 +64,7 @@ ggsave("model_metrics_table.png", plot = table_grob, width = 8, height = 3)
 
 
 
-
+**The calculations made below are from the Bayesian models used with chains = 2 and iter = 1000. They can be found under the Bayesian_Reg_Modeling_Draft file, between lines 1247 to 1452.**
 
 
 ```{r}
