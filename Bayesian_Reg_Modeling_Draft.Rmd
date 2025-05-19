@@ -1,0 +1,1454 @@
+---
+title: "Bayesian Linear Regression Draft"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(hoopR)
+library(glmnet)
+library(caret)
+library(broom)
+library(rstanarm)
+library(rsample)
+library(brms)
+library(yardstick)
+library(performance)
+library(modelsummary)
+library(Metrics)
+library(bayesplot)
+library(loo)
+library(bayestestR)
+library(bayesreg)
+```
+
+```{r}
+set.seed(1234)
+```
+
+
+
+```{r}
+set.seed(1234)
+folds <- createFolds(y_train, k = 5, list = TRUE, returnTrain = TRUE)
+```
+
+```{r}
+# K-fold cross-validation with 5 folds
+kfold_result <- kfold(stan_model2, K = 20)
+print(kfold_result)
+```
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+#partition data frame into training and testing sets
+train_indices <- createDataPartition(nba_margin_apm_model_data_combined$margin, times=1, p=.75, list=FALSE)
+
+#create training set
+df_train <- nba_margin_apm_model_data_combined[train_indices , ]
+
+#create testing set
+df_test  <- nba_margin_apm_model_data_combined[-train_indices, ]
+
+#view number of rows in each set
+nrow(df_train)
+
+#[1] 800
+
+nrow(df_test)
+```
+
+
+```{r}
+set.seed(1234)
+# Prepare matrix inputs for glmnet
+X_train <- as.matrix(df_train[, -ncol(df_train)])  # Features
+y_train <- df_train$margin  # Target
+```
+
+
+
+```{r}
+set.seed(1234)
+# Prepare the test set matrix
+X_test <- as.matrix(df_test[, -ncol(df_test)])  # Test features
+y_test <- df_test$margin  # Actual target values
+```
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+# Convert to data frame
+stan_df_train <- as.data.frame(y=X_train$margin, x=X_train)
+#brms_df_train$y_train <- y_train
+
+stan_df_test <- as.data.frame(y=X_test$margin, x=X_test)
+#brms_df_test$y_test <- y_test
+```
+
+
+
+```{r}
+set.seed(1234)
+stan_df_train <- stan_df_train %>%
+  rename_with(~ paste0("y", .), .cols = 1) %>%
+  rename_with(~ paste0("x", .), .cols = 2:885)
+```
+
+```{r}
+set.seed(1234)
+stan_df_test <- stan_df_test %>%
+  rename_with(~ paste0("y", .), .cols = 1) %>%
+  rename_with(~ paste0("x", .), .cols = 2:885)
+```
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+# Define priors with positive-only constraint (e.g., truncated normal)
+priors <- c(
+  prior(normal(0, 2), class = "Intercept"),
+  prior(normal(0, 2), class = "b", lb = 0)  # 'lb = 0' restricts to positive
+)
+```
+
+
+```{r}
+sapply(stan_df_train, function(x) length(unique(x)))
+```
+
+```{r}
+set.seed(1234)
+stan_df_train <- stan_df_train[sapply(stan_df_train, function(x) length(unique(x)) > 1)]
+```
+
+
+```{r}
+set.seed(1234)
+stan_df_test <- stan_df_test[sapply(stan_df_test, function(x) length(unique(x)) > 1)]
+```
+
+
+```{r}
+# cols_to_remove <- c(x202697,`x1630605`, `x1626144`, `x1630278`, `x1629760`, `x1629788`, `x1630306`, `x1629958`, `x1628238`, `x1630257`, `x1629597`, `x1629083`, `x1631495`, `x1630608`, `x1631209`, `x1641809`, `x1630622`)
+# -x202697, -x1630605, -x1626144, -x1630278, -x1629760, -x1629788, -x1630306, -x1629958, -x1628238, -x1630257, -x1629597, -x1629083, -x1631495, -x1630608, -x1631209, -x1641809, -x1630622
+stan_df_train <- stan_df_train %>%
+  select(-x1629665, -x1626155, -x1628591, -x1630693, -x1629602, -x1630701, -x1629232)
+```
+
+
+
+
+
+
+
+```{r}
+stan_df_test
+```
+
+
+```{r}
+stan_df_test <- stan_df_test %>%
+  select(-x1629665, -x1626155, -x1628591, -x1630693, -x1629602, -x1630701, -x1629232)
+```
+
+
+```{r}
+set.seed(1234)
+stan_model2 <- stan_glm(ymargin ~ ., data=stan_df_train, prior = priors,
+  chains = 4, iter = 2000, seed=111)
+```
+
+
+
+
+
+```{r}
+set.seed(1234)
+stan_model2 <- stan_glm(ymargin ~ ., data=stan_df_train, prior = normal(0, 1),         
+  prior_intercept = normal(0, 5),
+  chains = 4, iter = 2000, seed=111)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+model_bayes <- stan_glm(nba_margin_apm_model_data_combined$margin ~., data=player_matrix_combined, seed=111)
+```
+
+
+```{r}
+model_bayes <- stan_glm(margin ~., data=nba_margin_apm_model_data_combined, seed=111, prior=)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+sqrt(mean(model_bayes$residuals^2))
+```
+
+
+
+```{r}
+summary(model_bayes)
+```
+
+```{r}
+tidy_bayes_coef_combined <- tidy(model_bayes$coefficients)
+tidy_bayes_coef_combined
+```
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined <- tidy_bayes_coef_combined |>
+  filter() |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+
+
+
+
+
+
+
+
+```{r}
+data <- data.frame(y=nba_margin_apm_model_data_combined$margin, x=player_matrix_combined)
+```
+
+```{r}
+data
+```
+
+
+
+
+```{r}
+model_bayes_revised <- stan_glm(y ~., data=data, seed=111)
+```
+
+
+```{r}
+sqrt(mean(model_bayes_revised$residuals^2))
+```
+
+
+
+```{r}
+prior_summary(model_bayes_revised)
+```
+
+
+
+```{r}
+tidy_bayes_coef_combined <- tidy(model_bayes_revised$coefficients)
+tidy_bayes_coef_combined
+```
+
+
+```{r}
+tidy_bayes_coef_combined$x <- scale(tidy_bayes_coef_combined$x)
+```
+
+```{r}
+tidy_bayes_coef_combined
+```
+
+
+```{r}
+options(scipen = 999)  # Larger value makes R avoid scientific notation
+```
+
+
+```{r}
+tidy_bayes_coef_combined %>%
+  filter(names == "x.203999")
+```
+```{r}
+tidy_bayes_coef_combined$x <- tidy_bayes_coef_combined$x * 100
+```
+
+
+```{r}
+tidy_bayes_coef_combined
+```
+
+
+```{r}
+tidy_bayes_coef_combined <- tidy_bayes_coef_combined %>%
+  mutate(names = substring(names, 3))
+
+```
+
+
+```{r}
+tidy_bayes_coef_combined
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined <- tidy_bayes_coef_combined |>
+  filter(coefficients == model_bayes_revised$coefficients) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined <- tidy_bayes_coef_combined |>
+  # filter(coefficients == model_bayes_revised) |>
+  # # Convert term to numeric:
+  mutate(names = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("names" = "player_id"))
+```
+
+
+```{r}
+rapm_bayes_coef_combined
+```
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined |>
+  slice_max(x, n = 10) |>
+  dplyr::select(names, player_name, x, minutes)
+```
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined |>
+  slice_min(x, n = 10) |>
+  dplyr::select(names, player_name, x, minutes)
+```
+
+```{r}
+rapm_en_coef_combined |>
+  group_by() %>%
+  filter(n() > 1) %>%
+  arrange(names)
+```
+
+```{r}
+rapm_bayes_coef_combined %>%
+  count(names) %>%
+  filter(n > 1)
+```
+
+
+
+```{r}
+summary(model_bayes_revised)
+```
+
+
+
+
+```{r}
+posterior_summary(model_bayes_revised)
+```
+
+
+```{r}
+describe_posterior(model_bayes_revised)
+```
+
+
+```{r}
+model_bayes_revised$coefficients
+```
+
+
+```{r}
+loo_model <- loo(model_bayes_revised)
+```
+
+
+
+---------------------------------
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined <- tidy_bayes_coef_combined |>
+  filter(coefficients == model_bayes_revised) |>
+  # Convert term to numeric:
+  mutate(term = as.numeric(term)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("term" = "player_id"))
+```
+
+```{r}
+summary(model_bayes_revised)
+```
+
+```{r}
+posterior_summary(model_bayes_revised)
+```
+
+
+```{r}
+#partition data frame into training and testing sets
+train_indices <- createDataPartition(nba_margin_apm_model_data_combined$margin, times=1, p=.75, list=FALSE)
+
+#create training set
+df_train <- nba_margin_apm_model_data_combined[train_indices , ]
+
+#create testing set
+df_test  <- nba_margin_apm_model_data_combined[-train_indices, ]
+
+#view number of rows in each set
+nrow(df_train)
+
+#[1] 800
+
+nrow(df_test)
+```
+
+
+```{r}
+# Prepare matrix inputs for glmnet
+X_train <- as.matrix(df_train[, -ncol(df_train)])  # Features
+y_train <- df_train$margin  # Target
+```
+
+```{r}
+# Prepare the test set matrix
+X_test <- as.matrix(df_test[, -ncol(df_test)])  # Test features
+y_test <- df_test$margin  # Actual target values
+```
+
+
+```{r}
+X_train
+```
+
+
+
+```{r}
+# Convert to data frame
+stan_df_train <- as.data.frame(y=X_train$margin, x=X_train)
+#brms_df_train$y_train <- y_train
+
+stan_df_test <- as.data.frame(y=X_test$margin, x=X_test)
+#brms_df_test$y_test <- y_test
+```
+
+
+
+```{r}
+stan_df_train
+```
+
+
+```{r}
+# stan_df_test <- as.data.frame(y=X_test$margin, x=X_test)
+```
+
+```{r}
+# Use setdiff to find columns in df1 but not in df2
+# columns_only_in_df1 <- setdiff(stan_df_train, stan_df_test)
+# columns_only_in_df1
+# Use setdiff to find columns in df2 but not in df1
+# columns_only_in_df2 <- setdiff(col_names_df2, col_names_df1)
+```
+
+
+
+```{r}
+stan_df_train <- stan_df_train %>%
+  rename_with(~ paste0("y", .), .cols = 1) %>%
+  rename_with(~ paste0("x", .), .cols = 2:885)
+```
+
+
+
+```{r}
+head(stan_df_train)
+```
+
+
+```{r}
+sapply(stan_df_train, function(x) length(unique(x)))
+```
+
+```{r}
+stan_df_train <- stan_df_train[sapply(stan_df_train, function(x) length(unique(x)) > 1)]
+```
+
+
+```{r}
+stan_df_train
+```
+
+
+```{r}
+stan_model <- stan_glm(margin ~ ., data=stan_df_train, seed=111)
+```
+
+
+```{r}
+stan_model <- stan_glm(ymargin ~ ., data=stan_df_train, seed=111)
+```
+
+```{r}
+stan_df_train |>
+  select(x1629665, x1626155, x1628591, x1630693, x1629602, x1630701, x1629232)
+```
+
+
+
+
+
+```{r}
+prior_summary(stan_model2)
+```
+
+
+```{r}
+sqrt(mean(stan_model2$residuals^2))
+```
+
+
+```{r}
+tidy_stan_bayes_coef_combined <- tidy(stan_model$coefficients)
+tidy_stan_bayes_coef_combined
+```
+
+```{r}
+tidy_stan_bayes_coef_combined$x <- abs(tidy_stan_bayes_coef_combined$x)
+```
+
+
+```{r}
+tidy_stan_bayes_coef_combined <- tidy_stan_bayes_coef_combined %>%
+  mutate(names = substring(names, 2))
+
+```
+
+
+```{r}
+tidy_stan_bayes_coef_combined
+```
+
+```{r}
+set.seed(1234)
+rapm_stan_bayes_coef_combined <- tidy_stan_bayes_coef_combined |>
+  # filter(coefficients == model_bayes_revised) |>
+  # # Convert term to numeric:
+  mutate(names = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("names" = "player_id"))
+```
+
+
+```{r}
+rapm_stan_bayes_coef_combined
+```
+
+```{r}
+set.seed(1234)
+rapm_stan_bayes_coef_combined |>
+  slice_max(x, n = 10) |>
+  dplyr::select(names, player_name, x, minutes)
+```
+
+```{r}
+set.seed(1234)
+rapm_stan_bayes_coef_combined |>
+  slice_min(x, n = 10) |>
+  dplyr::select(names, player_name, x, minutes)
+```
+
+
+
+
+### Bayesian With Priors
+
+
+```{r}
+stan_df_train <- stan_df_train %>%
+  rename_with(~ paste0("y", .), .cols = 1) %>%
+  rename_with(~ paste0("x", .), .cols = 2:885)
+```
+
+```{r}
+stan_df_test <- stan_df_test %>%
+  rename_with(~ paste0("y", .), .cols = 1) %>%
+  rename_with(~ paste0("x", .), .cols = 2:885)
+```
+
+
+
+```{r}
+# Define priors with positive-only constraint (e.g., truncated normal)
+priors <- c(
+  prior(normal(0, 2), class = "Intercept"),
+  prior(normal(0, 2), class = "b", lb = 0)  # 'lb = 0' restricts to positive
+)
+```
+
+
+```{r}
+sapply(stan_df_train, function(x) length(unique(x)))
+```
+
+```{r}
+stan_df_train <- stan_df_train[sapply(stan_df_train, function(x) length(unique(x)) > 1)]
+```
+
+
+```{r}
+stan_df_test <- stan_df_test[sapply(stan_df_test, function(x) length(unique(x)) > 1)]
+```
+
+```{r}
+stan_df_test
+```
+
+
+
+```{r}
+constant_vars <- sapply(stan_df_train, function(x) length(unique(x)) == 1)
+names(stan_df_train)[constant_vars]
+```
+
+
+```{r}
+constant_vars <- sapply(stan_df_test, function(x) length(unique(x)) == 1)
+names(stan_df_test)[constant_vars]
+```
+
+```{r}
+stan_df_test
+```
+
+
+```{r}
+# Use setdiff to find columns in df2 but not in df1
+columns_only_in_df2 <- setdiff(stan_df_test, stan_df_train)
+```
+
+```{r}
+# cols_to_remove <- c(x202697,`x1630605`, `x1626144`, `x1630278`, `x1629760`, `x1629788`, `x1630306`, `x1629958`, `x1628238`, `x1630257`, `x1629597`, `x1629083`, `x1631495`, `x1630608`, `x1631209`, `x1641809`, `x1630622`)
+stan_df_train <- stan_df_train %>%
+  select(-x202697, -x1630605, -x1626144, -x1630278, -x1629760, -x1629788, -x1630306, -x1629958, -x1628238, -x1630257, -x1629597, -x1629083, -x1631495, -x1630608, -x1631209, -x1641809, -x1630622)
+```
+
+```{r}
+stan_df_train
+```
+
+```{r}
+stan_df_test <- stan_df_test %>%
+  select(-x1629665, -x1626155, -x1628591, -x1630693, -x1629602, -x1630701, -x1629232)
+```
+
+
+
+
+
+
+```{r}
+stan_df_test |>
+  select(`202697`,`1630605`, `1626144`, `1630278`, `1629760`, `1629788`, `1630306`, `1629958`, `1628238`, `1630257`, `1629597`, `1629083`, `1631495`, `1630608`, `1631209`, `1641809`, `1630622`)
+```
+
+```{r}
+stan_model2 <- stan_glm(ymargin ~ ., data=stan_df_train, prior = normal(0, 1),         
+  prior_intercept = normal(0, 5),
+  chains = 4, iter = 2000, seed=111)
+```
+
+
+
+
+```{r}
+stan_model2 <- stan_glm(ymargin ~ ., data=stan_df_train, prior = priors,seed=111)
+```
+
+
+
+```{r}
+prior_summary(stan_model2)
+```
+
+```{r}
+stan_model2
+```
+
+
+
+```{r}
+tidy_stan_bayes_coef_combined2 <- tidy(stan_model2$coefficients)
+tidy_stan_bayes_coef_combined2
+```
+
+
+```{r}
+tidy_stan_bayes_coef_combined2 <- tidy_stan_bayes_coef_combined2 %>%
+  mutate(names = substring(names, 2))
+```
+
+
+```{r}
+tidy_stan_bayes_coef_combined2
+```
+
+
+```{r}
+set.seed(1234)
+rapm_stan_bayes_coef_combined2 <- tidy_stan_bayes_coef_combined2 |>
+  # filter(coefficients == model_bayes_revised) |>
+  # # Convert term to numeric:
+  mutate(names = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("names" = "player_id"))
+```
+
+
+```{r}
+rapm_stan_bayes_coef_combined2
+```
+
+```{r}
+set.seed(1234)
+rapm_stan_bayes_coef_combined2 |>
+  slice_max(x, n = 30) |>
+  dplyr::select(names, player_name, x, minutes)
+```
+
+
+
+```{r}
+rapm_stan_bayes_coef_combined_percentile <- rapm_stan_bayes_coef_combined2 %>%
+  mutate(player_percentile = round(percent_rank(x), 3)) %>%
+  arrange(desc(player_percentile))
+rapm_stan_bayes_coef_combined_percentile
+```
+
+
+
+
+
+```{r}
+# Get posterior samples
+posterior <- posterior_samples(stan_model2)
+```
+
+```{r}
+posterior
+```
+
+
+```{r}
+# Make a new data frame for prediction
+x_test_df <- data.frame(X_train = I(X_test))  # Wrap x_test in I() to preserve matrix structure
+
+# Posterior predictions
+# predictions <- posterior_predict(fit, newdata = x_test_df)
+
+```
+
+```{r}
+stan_df_test
+```
+
+
+
+
+
+```{r}
+loo_stan_model2 <- loo(stan_model2)
+```
+
+
+```{r}
+stan_model2
+```
+
+
+```{r}
+loo_stan_model2
+```
+
+
+
+```{r}
+stan_df_test <- stan_df_test %>%
+  rename_with(~ paste0("y", .), .cols = 1) %>%
+  rename_with(~ paste0("x", .), .cols = 2:885)
+```
+
+
+```{r}
+stan_df_test
+```
+
+```{r}
+sapply(stan_df_test, function(x) length(unique(x)))
+```
+
+
+```{r}
+stan_df_test <- stan_df_test[sapply(stan_df_test, function(x) length(unique(x)) > 1)]
+```
+
+```{r}
+stan_df_test
+```
+
+
+```{r}
+# Example: check for duplicate column names in a dataframe called df
+duplicated_names <- duplicated(colnames(stan_df_test))
+colnames(stan_df_test)[duplicated_names]
+```
+
+
+
+
+
+
+
+```{r}
+predicted_values <- posterior_predict(stan_model2, newdata = stan_df_test, prior = priors)
+```
+
+```{r}
+predicted_values
+```
+
+
+
+
+```{r}
+prior_summary(predicted_values)
+```
+
+```{r}
+predicted_values2 <- predict(stan_model2, newdata = stan_df_test, prior = priors)
+```
+
+
+
+```{r}
+predicted_values2
+```
+
+
+```{r}
+stan_df_test$predicted <- predicted_values
+```
+
+
+
+```{r}
+# Posterior means and standard errors
+summary(stan_model2)
+```
+
+
+
+```{r}
+# OR full posterior draws (e.g., for visualization or uncertainty analysis)
+coef_draws <- as.matrix(stan_model2)
+head(coef_draws)
+```
+
+
+```{r}
+posterior_means <- colMeans(coef_draws)
+posterior_means
+```
+
+
+```{r}
+library(broom.mixed)
+tidy(stan_model2, conf.int = TRUE, conf.level = 0.95)
+```
+
+
+```{r}
+# Extract posterior draws
+posterior_draws <- as.matrix(stan_model2)
+
+# Plot densities for all coefficients
+mcmc_areas(posterior_draws, 
+           pars = colnames(posterior_draws),
+           prob = 0.95) + 
+  ggtitle("Posterior Distributions of Coefficients (95% CI)")
+```
+
+```{r}
+model_performance(stan_model2, metrics = c("RMSE", "R2_adjusted"))
+```
+
+
+
+
+
+```{r}
+tidy_stan_bayes_coef_combined2_predict <- tidy(predicted_values$coefficients)
+tidy_stan_bayes_coef_combined2_predict
+```
+
+
+
+```{r}
+# Fit the model
+#stan_model <- stan_glm(ymargin ~ ., data=stan_df_train, seed=111)
+brm_fit <- brm(ymargin ~ .,data = stan_df_train,prior = priors,chains = 4,iter = 2000,seed = 123)
+```
+
+
+
+
+```{r}
+stan_model_no_train <- stan_glm(nba_margin_apm_model_data_combined$margin ~ ., data=player_matrix_combined, 
+                        prior = normal(0, 1), prior_intercept = normal(0, 5), chains = 4, iter = 2000, seed=111)
+```
+
+
+
+```{r}
+set.seed(1234)
+k <- 10
+folds <- createFolds(bayes_df$y, k = k)
+```
+
+
+```{r}
+# Empty list to store metrics
+r2_list <- c()
+rmse_list <- c()
+
+for (i in 1:k) {
+  # Split data
+  test_idx <- folds[[i]]
+  train_data <- bayes_df[-test_idx, ]
+  test_data <- bayes_df[test_idx, ]
+  
+  # Fit Bayesian regression model
+  model <- stan_glm(y ~ ., data = train_data, family = gaussian(), prior = normal(0, 2.5), seed = 123)
+  
+  # Predict on test data
+  y_pred <- posterior_predict(model, newdata = test_data)
+  y_mean <- rowMeans(y_pred)  # Average across posterior samples
+  
+  # Compute metrics
+  y_true <- test_data$y
+  r2 <- 1 - sum((y_true - y_mean)^2) / sum((y_true - mean(y_true))^2)
+  rmse <- sqrt(mean((y_true - y_mean)^2))
+  
+  # Save metrics
+  r2_list[i] <- r2
+  rmse_list[i] <- rmse
+}
+
+
+# Average performance
+mean_r2 <- mean(r2_list)
+mean_rmse <- mean(rmse_list)
+
+cat("Mean R-squared:", mean_r2, "\n")
+cat("Mean RMSE:", mean_rmse, "\n")
+
+```
+
+
+```{r}
+model <- brm(
+  formula = y ~.,     # Regression formula
+  data = bayes_df,               # Data
+  family = gaussian(),         # Gaussian family for linear regression
+  chains = 4,                  # Number of MCMC chains
+  iter = 2000,                 # Total number of iterations
+  warmup = 500,                # Number of warmup iterations per chain
+  cores = 2,                   # Number of cores for parallel computing
+  seed = 1234                   # For reproducibility
+)
+```
+
+
+```{r}
+# Calculate R-squared
+R_squared_en <- 1 - fit_en_cv_combined$cvm / var(nba_margin_apm_model_data_combined$margin)
+print(paste("R-squared:", R_squared_en))
+```
+
+
+
+```{r}
+set.seed(1234)
+stan_model2 <- stan_glm(nba_margin_apm_model_data_combined$margin ~ ., data=player_matrix_combined, 
+                        prior = normal(0, 1), prior_intercept = normal(0, 5),
+                        chains = 4, iter = 2000, seed=111)
+```
+
+
+```{r}
+# using loo package for leave-one-out cross-validation
+rstan_model_bayes_cv_loo <- loo(rstan_model_bayes)
+```
+
+```{r}
+print(rstan_model_bayes_cv_loo)
+```
+
+
+
+```{r}
+rstan_model_bayes
+```
+
+
+```{r}
+set.seed(1234)
+# Define priors with positive-only constraint (e.g., truncated normal)
+priors <- c(
+  prior(normal(0, 2), class = "Intercept"),
+  prior(normal(0, 2), class = "b", lb = 0)  # 'lb = 0' restricts to positive
+)
+```
+
+
+```{r}
+# Perform 10-fold cross-validation
+kfold_results <- kfold(rstan_model_bayes, K = 5)
+```
+
+
+```{r}
+evaluate_bayes_model <- function(model, X, y) {
+  # Posterior predictive means
+  y_pred <- posterior_linpred(model, newdata = X, transform = TRUE)
+  y_mean <- colMeans(y_pred)
+
+  n <- length(y)
+  p <- length(model$coefficients) - 1  # exclude intercept
+  sse <- sum((y - y_mean)^2)
+  sst <- sum((y - mean(y))^2)
+
+  r_squared <- 1 - sse / sst
+  adj_r_squared <- 1 - (1 - r_squared) * (n - 1) / (n - p - 1)
+  rmse <- sqrt(mean((y - y_mean)^2))
+  mae <- mean(abs(y - y_mean))
+
+  return(list(
+    R_squared = r_squared,
+    Adjusted_R_squared = adj_r_squared,
+    RMSE = rmse,
+    MAE = mae
+  ))
+}
+
+```
+
+
+
+
+
+```{r}
+# Evaluate model on same or new data
+results <- evaluate_bayes_model(rstan_model_bayes, X = bayes_df, y = bayes_df$y)
+print(results)
+```
+
+
+
+```{r}
+bayes_model_metrics <- function(model, y_actual, X_matrix) {
+  # Predicted values (posterior mean)
+  #y_pred <- as.vector(fitted(model)[, 1])
+  y_pred <- as.vector(colMeans(posterior_predict(model)))
+  
+  # Residuals
+  residuals <- y_actual - y_pred
+  
+  # Metrics
+  sse <- sum(residuals^2)
+  sst <- sum((y_actual - mean(y_actual))^2)
+  r_squared <- 1 - sse / sst
+  n <- length(y_actual)
+  p <- ncol(X_matrix)
+  adj_r_squared <- 1 - ((1 - r_squared) * (n - 1)) / (n - p - 1)
+  
+  rmse <- sqrt(mean(residuals^2))
+  mae <- mean(abs(residuals))
+  
+  return(list(
+    R_squared = r_squared,
+    Adjusted_R_squared = adj_r_squared,
+    RMSE = rmse,
+    MAE = mae
+  ))
+}
+```
+
+
+```{r}
+bayes_model_metrics(rstan_model_bayes, nba_margin_apm_model_data_combined$margin, player_matrix_combined)
+```
+
+
+```{r}
+# Actual values
+y_true <- bayes_df$
+
+# Residual sum of squares
+ss_res <- sum((y_true - y_mean)^2)
+
+# Total sum of squares
+ss_tot <- sum((y_true - mean(y_true))^2)
+
+# R-squared
+r_squared <- 1 - (ss_res / ss_tot)
+
+# Adjusted R-squared
+n <- length(y_true)
+p <- length(coef(fit)) - 1  # exclude intercept
+
+adj_r_squared <- 1 - ((1 - r_squared) * (n - 1) / (n - p - 1))
+
+```
+
+
+```{r}
+evaluate_bayes_model <- function(model, X, y) {
+  # Posterior predictive means
+  y_pred <- posterior_linpred(model, newdata = X, transform = TRUE)
+  y_mean <- colMeans(y_pred)
+
+  n <- length(y)
+  p <- length(model$coefficients) - 1  # exclude intercept
+  sse <- sum((y - y_mean)^2)
+  sst <- sum((y - mean(y))^2)
+
+  r_squared <- 1 - sse / sst
+  adj_r_squared <- 1 - (1 - r_squared) * (n - 1) / (n - p - 1)
+  rmse <- sqrt(mean((y - y_mean)^2))
+  mae <- mean(abs(y - y_mean))
+
+  return(list(
+    R_squared = r_squared,
+    Adjusted_R_squared = adj_r_squared,
+    RMSE = rmse,
+    MAE = mae
+  ))
+}
+
+```
+
+
+```{r}
+# Evaluate model on same or new data
+results <- evaluate_bayes_model(rstan_model_bayes_modified, X = df_modified, y = your_data$y)
+
+print(results)
+```
+
+```{r}
+r2_bayes(rstan_model_bayes)
+```
+
+
+
+```{r}
+# Predictions
+predicted <- posterior_predict(rstan_model_bayes)
+pred_mean <- rowMeans(predicted)
+
+# True values
+actual <- bayes_df$y
+n <- length(actual)
+p <- length(coef(rstan_model_bayes)) - 1  # subtract intercept
+
+# R-squared
+rss <- sum((actual - pred_mean)^2)
+tss <- sum((actual - mean(actual))^2)
+r_squared <- 1 - (rss / tss)
+
+# Adjusted R-squared
+adj_r_squared <- 1 - ((1 - r_squared) * (n - 1)) / (n - p - 1)
+
+adj_r_squared
+```
+
+
+
+```{r}
+y_hat <- posterior_linpred(rstan_model_bayes, transform = TRUE)
+#y_mean <- colMeans(y_hat)
+```
+
+
+```{r}
+#r2_loo(rstan_model_bayes)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+### Bayesian Regression Using chains = 2, iter = 1000
+
+
+```{r}
+rstan_model_bayes2 <- stan_glm(y ~ ., data=bayes_df, 
+                        prior = normal(0, 1), prior_intercept = normal(0, 5),
+                        chains = 2, iter = 1000, seed=111)
+```
+
+
+```{r}
+r2_bayes <- bayes_R2(rstan_model_bayes2)
+```
+
+
+
+
+
+
+```{r}
+R_squared_bayes <- mean(r2_bayes)
+print(R_squared_bayes)
+```
+
+
+
+
+```{r}
+# Number of observations
+n <- nobs(rstan_model_bayes2)
+
+# Number of predictors (excluding intercept)
+p <- length(attr(rstan_model_bayes2$terms, "term.labels"))
+
+# Classic-style adjusted R² (approximate, not Bayesian)
+adj_r2_bayes <- 1 - ((1 - R_squared_bayes) * (n - 1)) / (n - p - 1)
+print(adj_r2_bayes)
+
+```
+
+
+
+```{r}
+bayes_rmse2 <- sqrt(mean(rstan_model_bayes2$residuals^2))
+bayes_rmse2
+```
+
+
+```{r}
+tidy_bayes_coef_combined2 <- tidy(rstan_model_bayes2$coefficients)
+tidy_bayes_coef_combined2
+```
+
+
+```{r}
+tidy_bayes_coef_combined2 <- tidy_bayes_coef_combined2 %>%
+  mutate(names = substring(names, 3))
+```
+
+```{r}
+tidy_bayes_coef_combined2 <- tidy_bayes_coef_combined2[-1, ]
+```
+
+
+
+```{r}
+tidy_bayes_coef_combined2
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined2 <- tidy_bayes_coef_combined2 |>
+  # filter(coefficients == model_bayes_revised) |>
+  # # Convert term to numeric:
+  mutate(names = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("names" = "player_id"))
+```
+
+
+```{r}
+rapm_bayes_coef_combined_percentile2 <- rapm_bayes_coef_combined2 %>%
+  rename(estimate = x) %>%
+  mutate(estimate = round(estimate, 2)) %>%
+  mutate(player_percentile = round(percent_rank(estimate), 2) * 100) %>%
+  arrange(desc(player_percentile))
+reactable(rapm_bayes_coef_combined_percentile2)
+```
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_percentile2 |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(names, player_name, estimate, minutes, player_percentile) |>
+  reactable()
+```
+
+
+
+
+### Bayesian Modified with 2 chains, iter = 1000
+
+
+
+```{r}
+rstan_model_bayes_modified2 <- stan_glm(y ~ ., data=bayes_df_modified, 
+                        prior = normal(0, 1), prior_intercept = normal(0, 5),
+                        chains = 2, iter = 1000, seed=111)
+```
+
+```{r}
+r2_bayes_modified <- bayes_R2(rstan_model_bayes_modified2)
+```
+
+
+
+
+
+
+```{r}
+R_squared_bayes_modified <- mean(r2_bayes_modified)
+print(R_squared_bayes_modified)
+```
+
+
+
+
+```{r}
+# Number of observations
+n <- nobs(rstan_model_bayes_modified2)
+
+# Number of predictors (excluding intercept)
+p <- length(attr(rstan_model_bayes_modified2$terms, "term.labels"))
+
+# Classic-style adjusted R² (approximate, not Bayesian)
+adj_r2_bayes_modified <- 1 - ((1 - R_squared_bayes_modified) * (n - 1)) / (n - p - 1)
+print(adj_r2_bayes_modified)
+
+```
+
+
+
+```{r}
+bayes_rmse_modified2 <- sqrt(mean(rstan_model_bayes_modified2$residuals^2))
+bayes_rmse_modified2
+```
+
+
+```{r}
+tidy_bayes_coef_combined_modified2 <- tidy(rstan_model_bayes_modified2$coefficients)
+tidy_bayes_coef_combined_modified2
+```
+
+
+```{r}
+tidy_bayes_coef_combined_modified2 <- tidy_bayes_coef_combined_modified2 %>%
+  mutate(names = substring(names, 3))
+```
+
+```{r}
+tidy_bayes_coef_combined_modified2 <- tidy_bayes_coef_combined_modified2[-1, ]
+```
+
+
+
+```{r}
+head(tidy_bayes_coef_combined_modified2)
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_modified2 <- tidy_bayes_coef_combined_modified2 |>
+  # filter(coefficients == model_bayes_revised) |>
+  # # Convert term to numeric:
+  mutate(names = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("names" = "player_id"))
+```
+
+
+```{r}
+rapm_bayes_coef_combined_percentile_modified2 <- rapm_bayes_coef_combined_modified2 %>%
+  rename(estimate = x) %>%
+  mutate(estimate = round(estimate, 2)) %>%
+  mutate(player_percentile = round(percent_rank(estimate), 2) * 100) %>%
+  arrange(desc(player_percentile))
+reactable(rapm_bayes_coef_combined_percentile_modified2)
+```
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_percentile_modified2 |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(names, player_name, estimate, minutes, player_percentile) |>
+  reactable()
+```
+
+
