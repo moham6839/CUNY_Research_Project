@@ -1,0 +1,264 @@
+---
+title: "Bayesian Linear Regression Final Modeling"
+author: "Mohamed Hassan-El Serafi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Bayesian Linear Regression 
+
+```{r}
+bayes_df <- data.frame(y=nba_margin_apm_model_data_combined$margin, x=player_matrix_combined)
+```
+
+
+
+```{r}
+set.seed(1234)
+rstan_model_bayes <- stan_glm(y ~ ., data=bayes_df, 
+                        prior = normal(0, 1), prior_intercept = normal(0, 5),
+                        chains = 4, iter = 2000, seed=111)
+```
+
+
+```{r}
+bayes_rmse <- sqrt(mean(rstan_model_bayes$residuals^2))
+bayes_rmse
+```
+
+
+
+
+
+```{r}
+prior_summary(rstan_model_bayes)
+```
+
+```{r}
+tidy_bayes_coef_combined <- tidy(rstan_model_bayes$coefficients)
+tidy_bayes_coef_combined
+```
+
+```{r}
+tidy_bayes_coef_combined <- tidy_bayes_coef_combined %>%
+  mutate(names = substring(names, 3))
+```
+
+```{r}
+tidy_bayes_coef_combined <- tidy_bayes_coef_combined[-1, ]
+```
+
+
+
+```{r}
+tidy_bayes_coef_combined
+```
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined <- tidy_bayes_coef_combined |>
+  # filter(coefficients == model_bayes_revised) |>
+  # # Convert term to numeric:
+  mutate(names = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("names" = "player_id"))
+```
+
+
+```{r}
+rapm_bayes_coef_combined_percentile <- rapm_bayes_coef_combined %>%
+  rename(estimate = x) %>%
+  mutate(estimate = round(estimate, 2)) %>%
+  mutate(player_percentile = round(percent_rank(estimate), 2) * 100) %>%
+  arrange(desc(player_percentile))
+reactable(rapm_bayes_coef_combined_percentile)
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_percentile |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(names, player_name, estimate, minutes, player_percentile) |>
+  reactable()
+```
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_percentile |>
+  slice_min(estimate, n = 50) |>
+  dplyr::select(names, player_name, estimate, minutes, player_percentile) |>
+  reactable()
+```
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_percentile |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Bayesian estimate", y = "Count", title = "Histogram of RAPM Bayesian Model for NBA Players") +
+  theme_bw()
+```
+
+
+
+
+
+```{r}
+ggplot(data=rapm_bayes_coef_combined_percentile[1:30, ], aes(x=reorder(player_name, -estimate), y=estimate)) +
+  geom_bar(stat="identity", 
+           position="dodge",
+           fill = "blue") +
+  geom_text(aes(label = estimate,
+                hjust = -.25,
+                vjust = 0.25),
+            size = 2.3) +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(), # Remove gridlines
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) + # Remove box
+  labs(title="Top 30 NBA Players RAPM Using Bayesian Linear \n Regression Model (2020-2024)",
+       y="RAPM Bayesian Estimate",
+       x="Player") +
+  coord_flip()
+```
+
+
+
+
+
+
+## Bayesian Linear Regression Using Modified Dataset
+
+```{r}
+bayes_df_modified <- data.frame(y=df_modified$margin, x=df_modified)
+```
+
+
+
+```{r}
+bayes_df_modified <- bayes_df_modified %>%
+  select(-x.margin)
+```
+
+
+
+```{r}
+set.seed(1234)
+rstan_model_bayes_modified <- stan_glm(y ~ ., data=bayes_df_modified, 
+                        prior = normal(0, 1), prior_intercept = normal(0, 5),
+                        chains = 4, iter = 2000, seed=111)
+```
+
+
+
+
+
+
+
+```{r}
+bayes_rmse_mod <- sqrt(mean(rstan_model_bayes_modified$residuals^2))
+bayes_rmse_mod
+```
+
+
+
+
+
+
+```{r}
+prior_summary(rstan_model_bayes_modified)
+```
+
+
+```{r}
+tidy_bayes_coef_combined_modified <- tidy(rstan_model_bayes_modified$coefficients)
+tidy_bayes_coef_combined_modified
+```
+
+
+
+```{r}
+tidy_bayes_coef_combined_modified <- tidy_bayes_coef_combined_modified %>%
+  mutate(names = substring(names, 3))
+```
+
+```{r}
+tidy_bayes_coef_combined_modified <- tidy_bayes_coef_combined_modified[-1, ]
+```
+
+
+
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_modified <- tidy_bayes_coef_combined_modified |>
+  # filter(coefficients == model_bayes_revised) |>
+  # # Convert term to numeric:
+  mutate(names = as.numeric(names)) |>
+  # Now join the player names:
+  left_join(player_combined_df, by = c("names" = "player_id"))
+```
+
+
+```{r}
+rapm_bayes_coef_combined_percentile_modified <- rapm_bayes_coef_combined_modified %>%
+  rename(estimate = x) %>%
+  mutate(estimate = round(estimate, 2)) %>%
+  mutate(player_percentile = round(percent_rank(estimate), 2) * 100) %>%
+  arrange(desc(player_percentile))
+reactable(rapm_bayes_coef_combined_percentile_modified)
+```
+
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_percentile_modified |>
+  slice_max(estimate, n = 50) |>
+  dplyr::select(names, player_name, estimate, minutes, player_percentile) |>
+  reactable()
+```
+
+
+```{r}
+set.seed(1234)
+rapm_bayes_coef_combined_percentile_modified |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(x = "RAPM Bayesian estimate", y = "Count", title = "Histogram of RAPM Bayesian for NBA Players \n Who Played Over Median Minutes") +
+  theme_bw()
+```
+
+
+```{r}
+ggplot(data=rapm_bayes_coef_combined_percentile_modified[1:30, ], aes(x=reorder(player_name, -estimate), y=estimate)) +
+  geom_bar(stat="identity", 
+           position="dodge",
+           fill = "red") +
+  geom_text(aes(label = estimate,
+                hjust = -.25,
+                vjust = 0.25),
+            size = 2.3) +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(), # Remove gridlines
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) + # Remove box
+  labs(title="Top 30 NBA Players RAPM Using Bayesian Linear Regression \n Model with Modified Dataset (2020-2024)",
+       y="RAPM BLR Estimate",
+       x="Player") +
+  coord_flip()
+```
+
+
+```{r}
+bayes_R2(rstan_model_bayes)
+```
+
+
+
